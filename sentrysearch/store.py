@@ -27,6 +27,10 @@ class SentryStore:
             name="dashcam_chunks",
             metadata={"hnsw:space": "cosine"},
         )
+        self._text_collection = self._client.get_or_create_collection(
+            name="text_chunks",
+            metadata={"hnsw:space": "l2"},
+        )
 
     @property
     def collection(self) -> chromadb.Collection:
@@ -88,6 +92,64 @@ class SentryStore:
             metadatas=metadatas,
         )
 
+    def add_text_chunks(self, chunks: list[dict]) -> None:
+        """Batch-store transcript text embeddings."""
+        now = datetime.now(timezone.utc).isoformat()
+        ids = []
+        embeddings = []
+        metadatas = []
+
+        for chunk in chunks:
+            chunk_id = _make_chunk_id(chunk["source_file"], chunk["start_time"])
+            ids.append(chunk_id)
+            embeddings.append(chunk["embedding"])
+            metadatas.append({
+                "source_file": chunk["source_file"],
+                "start_time": float(chunk["start_time"]),
+                "end_time": float(chunk["end_time"]),
+                "transcript": chunk.get("transcript", ""),
+                "indexed_at": now,
+            })
+
+        self._text_collection.upsert(
+            ids=ids,
+            embeddings=embeddings,
+            metadatas=metadatas,
+        )
+
+    def search_text(
+        self,
+        query_embedding: list[float],
+        n_results: int = 5,
+    ) -> list[dict]:
+        """Return top N results from the text collection."""
+        count = self._text_collection.count()
+        if count == 0:
+            return []
+
+        results = self._text_collection.query(
+            query_embeddings=[query_embedding],
+            n_results=min(n_results, count),
+        )
+
+        hits = []
+        for i in range(len(results["ids"][0])):
+            meta = results["metadatas"][0][i]
+            distance = results["distances"][0][i]
+            hits.append({
+                "source_file": meta["source_file"],
+                "start_time": meta["start_time"],
+                "end_time": meta["end_time"],
+                "transcript": meta.get("transcript", ""),
+                "score": 1.0 - distance,
+                "distance": distance,
+            })
+        return hits
+
+    def has_text_index(self) -> bool:
+        """Check whether any text embeddings exist."""
+        return self._text_collection.count() > 0
+
     # ------------------------------------------------------------------
     # Read
     # ------------------------------------------------------------------
@@ -132,7 +194,7 @@ class SentryStore:
         """Return store statistics."""
         total = self._collection.count()
         if total == 0:
-            return {"total_chunks": 0, "unique_source_files": 0, "source_files": []}
+            return {"total_chunks": 0, "unique_source_files": 0, "source_files": [], "text_chunks": 0}
 
         # Fetch all metadata (only the fields we need)
         all_meta = self._collection.get(include=["metadatas"])
@@ -141,4 +203,5 @@ class SentryStore:
             "total_chunks": total,
             "unique_source_files": len(source_files),
             "source_files": source_files,
+            "text_chunks": self._text_collection.count(),
         }
