@@ -149,14 +149,20 @@ def init():
               help="Target frames per second for preprocessing.")
 @click.option("--skip-still/--no-skip-still", default=True, show_default=True,
               help="Skip chunks with no meaningful visual change.")
+@click.option("--audio/--no-audio", default=True, show_default=True,
+              help="Transcribe audio and create text embeddings.")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
-def index(directory, chunk_duration, overlap, preprocess, target_resolution, target_fps, skip_still, verbose):
+def index(directory, chunk_duration, overlap, preprocess, target_resolution, target_fps, skip_still, audio, verbose):
     """Index mp4 files in DIRECTORY for searching."""
     from .chunker import chunk_video, is_still_frame_chunk, preprocess_chunk, scan_directory
     from .embedder import embed_video_chunk
     from .store import SentryStore
 
     try:
+        if audio:
+            from .transcriber import transcribe_chunk
+            from .embedder import embed_text
+
         if os.path.isfile(directory):
             videos = [os.path.abspath(directory)]
         else:
@@ -187,6 +193,7 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution, tar
             chunks = chunk_video(abs_path, chunk_duration=chunk_duration, overlap=overlap)
             num_chunks = len(chunks)
             embedded = []
+            transcripts = []
 
             if verbose:
                 click.echo(f"  [verbose] {basename}: duration split into {num_chunks} chunks", err=True)
@@ -233,6 +240,20 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution, tar
 
                 embedding = embed_video_chunk(embed_path, verbose=verbose)
                 embedded.append({**chunk, "embedding": embedding})
+
+                if audio:
+                    click.echo(
+                        f"Transcribing file {file_idx}/{total_files}: {basename} "
+                        f"[chunk {chunk_idx}/{num_chunks}]"
+                    )
+                    transcript = transcribe_chunk(chunk["chunk_path"])
+                    if transcript and verbose:
+                        click.echo(
+                            f"    [verbose] transcript: {transcript[:80]}...",
+                            err=True,
+                        )
+                    transcripts.append({**chunk, "transcript": transcript})
+
                 # Clean up chunk file after embedding
                 files_to_cleanup.append(chunk["chunk_path"])
 
@@ -252,6 +273,16 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution, tar
                 store.add_chunks(embedded)
                 new_files += 1
                 new_chunks += len(embedded)
+
+                if audio:
+                    text_to_embed = []
+                    for t in transcripts:
+                        if t["transcript"]:
+                            text_emb = embed_text(t["transcript"], verbose=verbose)
+                            if text_emb:
+                                text_to_embed.append({**t, "embedding": text_emb})
+                    if text_to_embed:
+                        store.add_text_chunks(text_to_embed)
 
         stats = store.get_stats()
         skipped_msg = f" (skipped {skipped_chunks} still)" if skipped_chunks else ""
@@ -329,14 +360,20 @@ def search(query, n_results, output_dir, trim, threshold, overlay, verbose):
             start_str = _fmt_time(r["start_time"])
             end_str = _fmt_time(r["end_time"])
             score = r["similarity_score"]
+            source = r.get("match_source", "visual")
+            source_tag = f"[{source}]" if source != "visual" or store.has_text_index() else ""
+
             if verbose:
+                visual_s = r.get("visual_score", score)
+                text_s = r.get("text_score", 0.0)
                 click.echo(
-                    f"  #{i} [{score:.6f}] {basename} "
-                    f"@ {start_str}-{end_str}"
+                    f"  #{i} [{score:.6f}] {source_tag} {basename} "
+                    f"@ {start_str}-{end_str} "
+                    f"(visual={visual_s:.4f} text={text_s:.4f})"
                 )
             else:
                 click.echo(
-                    f"  #{i} [{score:.2f}] {basename} "
+                    f"  #{i} [{score:.2f}] {source_tag} {basename} "
                     f"@ {start_str}-{end_str}"
                 )
 
@@ -419,3 +456,79 @@ def stats():
     click.echo("\nIndexed files:")
     for f in s["source_files"]:
         click.echo(f"  {f}")
+
+    if s.get("text_chunks", 0) > 0:
+        click.echo(f"Audio indexed: {s['text_chunks']} chunks")
+    else:
+        click.echo("Audio indexed: none (run `sentrysearch index <dir>` to add)")
+
+
+# -----------------------------------------------------------------------
+# reindex-audio
+# -----------------------------------------------------------------------
+
+@cli.command("reindex-audio")
+@click.argument("directory", type=click.Path(exists=True, file_okay=True, dir_okay=True))
+@click.option("--chunk-duration", default=30, show_default=True,
+              help="Chunk duration in seconds (must match original indexing).")
+@click.option("--overlap", default=5, show_default=True,
+              help="Overlap between chunks in seconds (must match original indexing).")
+@click.option("--verbose", is_flag=True, help="Show debug info.")
+def reindex_audio(directory, chunk_duration, overlap, verbose):
+    """Add audio transcription to already-indexed videos."""
+    from .chunker import chunk_video, scan_directory
+    from .embedder import embed_text
+    from .store import SentryStore
+    from .transcriber import transcribe_chunk
+
+    try:
+        if os.path.isfile(directory):
+            videos = [os.path.abspath(directory)]
+        else:
+            videos = scan_directory(directory)
+
+        if not videos:
+            click.echo("No mp4 files found.")
+            return
+
+        store = SentryStore()
+        total_files = len(videos)
+        new_text_chunks = 0
+
+        for file_idx, video_path in enumerate(videos, 1):
+            abs_path = os.path.abspath(video_path)
+            basename = os.path.basename(video_path)
+
+            if not store.is_indexed(abs_path):
+                click.echo(f"Skipping ({file_idx}/{total_files}): {basename} (not indexed)")
+                continue
+
+            click.echo(f"Processing ({file_idx}/{total_files}): {basename}")
+            chunks = chunk_video(abs_path, chunk_duration=chunk_duration, overlap=overlap)
+
+            text_to_embed = []
+            for chunk_idx, chunk in enumerate(chunks, 1):
+                click.echo(f"  Transcribing chunk {chunk_idx}/{len(chunks)}")
+                transcript = transcribe_chunk(chunk["chunk_path"])
+
+                if transcript:
+                    if verbose:
+                        click.echo(f"    [verbose] transcript: {transcript[:80]}...", err=True)
+                    text_emb = embed_text(transcript, verbose=verbose)
+                    if text_emb:
+                        text_to_embed.append({**chunk, "embedding": text_emb,
+                                              "transcript": transcript})
+
+            # Clean up chunk files
+            if chunks:
+                tmp_dir = os.path.dirname(chunks[0]["chunk_path"])
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+            if text_to_embed:
+                store.add_text_chunks(text_to_embed)
+                new_text_chunks += len(text_to_embed)
+
+        click.echo(f"\nAdded {new_text_chunks} audio transcriptions.")
+
+    except Exception as e:
+        _handle_error(e)
