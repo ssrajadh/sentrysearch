@@ -184,3 +184,38 @@ def embed_query(query_text: str, verbose: bool = False) -> list[float]:
         )
 
     return embedding
+
+
+def embed_text(text: str, verbose: bool = False) -> list[float]:
+    """Embed transcript text as a document for retrieval.
+
+    Uses RETRIEVAL_DOCUMENT task type (vs RETRIEVAL_QUERY for search queries).
+    Returns empty list if text is empty.
+    """
+    if not text.strip():
+        return []
+
+    client = _get_client()
+    _limiter.wait()
+    t0 = time.monotonic()
+    response = _retry(
+        lambda: client.models.embed_content(
+            model=EMBED_MODEL,
+            contents=text,
+            config=types.EmbedContentConfig(
+                task_type="RETRIEVAL_DOCUMENT",
+                output_dimensionality=DIMENSIONS,
+            ),
+        )
+    )
+    elapsed = time.monotonic() - t0
+    embedding = response.embeddings[0].values
+
+    if verbose:
+        print(
+            f"    [verbose] text embedding: dims={len(embedding)}, "
+            f"text_len={len(text)}, api_time={elapsed:.2f}s",
+            file=sys.stderr,
+        )
+
+    return embedding
