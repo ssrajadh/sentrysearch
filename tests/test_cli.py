@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from sentrysearch.cli import _fmt_time, cli
+from sentrysearch.cli import _fmt_time, _overlay_output_path, cli
 
 
 @pytest.fixture
@@ -19,6 +19,11 @@ class TestFmtTime:
 
     def test_minutes(self):
         assert _fmt_time(125) == "02:05"
+
+
+class TestOverlayOutputPath:
+    def test_mov_input_outputs_mp4(self):
+        assert _overlay_output_path("/tmp/iphone.mov") == "/tmp/iphone_overlay.mp4"
 
 
 class TestCliGroup:
@@ -71,7 +76,7 @@ class TestSearchCommand:
 
 
 class TestIndexCommand:
-    def test_index_no_mp4s(self, runner, tmp_path):
+    def test_index_no_supported_videos(self, runner, tmp_path):
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
         with patch("sentrysearch.store.SentryStore") as MockStore, \
@@ -79,7 +84,7 @@ class TestIndexCommand:
             MockStore.return_value = MagicMock()
             result = runner.invoke(cli, ["index", str(empty_dir)])
             assert result.exit_code == 0
-            assert "No mp4 files" in result.output or "No mp4" in result.output
+            assert "No supported video files found" in result.output
 
     def test_index_accepts_backend_option(self, runner, tmp_path):
         empty_dir = tmp_path / "empty"
@@ -89,6 +94,40 @@ class TestIndexCommand:
             MockStore.return_value = MagicMock()
             result = runner.invoke(cli, ["index", str(empty_dir), "--backend", "local"])
             assert result.exit_code == 0
+
+    def test_index_scans_mov_files(self, runner, tmp_path):
+        d = tmp_path / "vids"
+        d.mkdir()
+        source = d / "iphone.MOV"
+        source.write_bytes(b"fake")
+
+        chunk_dir = tmp_path / "chunks"
+        chunk_dir.mkdir()
+        chunk_path = chunk_dir / "chunk_000.mp4"
+        chunk_path.write_bytes(b"chunk")
+
+        mock_store = MagicMock()
+        mock_store.is_indexed.return_value = False
+        mock_store.get_stats.return_value = {
+            "total_chunks": 1,
+            "unique_source_files": 1,
+        }
+        mock_embedder = MagicMock()
+        mock_embedder.embed_video_chunk.return_value = [0.1] * 768
+
+        with patch("sentrysearch.store.SentryStore", return_value=mock_store), \
+             patch("sentrysearch.embedder.get_embedder", return_value=mock_embedder), \
+             patch("sentrysearch.chunker.chunk_video", return_value=[{
+                 "chunk_path": str(chunk_path),
+                 "source_file": str(source.resolve()),
+                 "start_time": 0.0,
+                 "end_time": 1.0,
+             }]), \
+             patch("sentrysearch.chunker.is_still_frame_chunk", return_value=False):
+            result = runner.invoke(cli, ["index", str(d), "--no-preprocess"])
+
+        assert result.exit_code == 0
+        mock_store.add_chunks.assert_called_once()
 
 
 class TestIndexLocalFlags:

@@ -138,18 +138,20 @@ class TestPreprocessChunk:
 # ---------------------------------------------------------------------------
 
 class TestScanDirectory:
-    def test_finds_mp4_files(self, tmp_path):
+    def test_finds_supported_video_files(self, tmp_path):
         (tmp_path / "a.mp4").write_text("fake")
         (tmp_path / "b.MP4").write_text("fake")
+        (tmp_path / "c.mov").write_text("fake")
+        (tmp_path / "d.MOV").write_text("fake")
         (tmp_path / "c.txt").write_text("nope")
         sub = tmp_path / "sub"
         sub.mkdir()
-        (sub / "d.mp4").write_text("fake")
+        (sub / "e.mp4").write_text("fake")
 
         results = scan_directory(str(tmp_path))
-        assert len(results) == 3
+        assert len(results) == 5
         extensions = {os.path.splitext(r)[1].lower() for r in results}
-        assert extensions == {".mp4"}
+        assert extensions == {".mp4", ".mov"}
 
     def test_empty_directory(self, tmp_path):
         assert scan_directory(str(tmp_path)) == []

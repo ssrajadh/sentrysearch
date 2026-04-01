@@ -9,6 +9,13 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+SUPPORTED_VIDEO_EXTENSIONS = (".mp4", ".mov")
+
+
+def is_supported_video_file(path: str) -> bool:
+    """Return True when *path* has a supported video extension."""
+    return Path(path).suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
+
 
 def _ffmpeg_runs(path: str) -> bool:
     """Return True if *path* can write a trivial output file.
@@ -116,7 +123,7 @@ def chunk_video(
     """Split a video into overlapping chunks using ffmpeg.
 
     Args:
-        video_path: Path to the input mp4 file.
+        video_path: Path to the input video file.
         chunk_duration: Duration of each chunk in seconds.
         overlap: Overlap between consecutive chunks in seconds.
 
@@ -308,7 +315,7 @@ def preprocess_chunk(
     """Downscale and reduce frame rate of a video chunk for cheaper embedding.
 
     Args:
-        chunk_path: Path to the input mp4 chunk.
+        chunk_path: Path to the input video chunk.
         target_resolution: Target height in pixels (width scales to maintain aspect ratio).
         target_fps: Target frames per second.
 
@@ -341,7 +348,7 @@ def preprocess_chunk(
 
 
 def scan_directory(directory_path: str) -> list[str]:
-    """Recursively find all .mp4 files in a directory.
+    """Recursively find supported video files in a directory.
 
     Args:
         directory_path: Root directory to scan.
@@ -349,10 +356,10 @@ def scan_directory(directory_path: str) -> list[str]:
     Returns:
         Sorted list of absolute file paths.
     """
-    mp4_files = []
+    video_files = []
     for root, _dirs, files in os.walk(directory_path):
         for f in files:
-            if f.lower().endswith(".mp4"):
-                mp4_files.append(os.path.join(root, f))
-    mp4_files.sort()
-    return mp4_files
+            if is_supported_video_file(f):
+                video_files.append(os.path.join(root, f))
+    video_files.sort()
+    return video_files
