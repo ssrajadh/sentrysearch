@@ -35,6 +35,12 @@ def _open_file(path: str) -> None:
         pass  # non-critical — clip is already saved
 
 
+def _overlay_output_path(path: str) -> str:
+    """Return the default overlay output path for a source video."""
+    base, _ext = os.path.splitext(path)
+    return f"{base}_overlay.mp4"
+
+
 def _handle_error(e: Exception) -> None:
     """Print a user-friendly error and exit."""
     from .gemini_embedder import GeminiAPIKeyError, GeminiQuotaError
@@ -109,7 +115,7 @@ def _apply_overlay_to_clip(
                 fg="yellow", err=True,
             )
 
-    overlay_path = clip_path.replace(".mp4", "_overlay.mp4")
+    overlay_path = _overlay_output_path(clip_path)
     result_path = apply_overlay(
         clip_path, overlay_path, samples, location,
         source_file=source_file,
@@ -236,8 +242,14 @@ def init():
 @click.option("--verbose", is_flag=True, help="Show debug info.")
 def index(directory, chunk_duration, overlap, preprocess, target_resolution,
           target_fps, skip_still, backend, model, quantize, verbose):
-    """Index mp4 files in DIRECTORY for searching."""
-    from .chunker import chunk_video, is_still_frame_chunk, preprocess_chunk, scan_directory
+    """Index supported video files in DIRECTORY for searching."""
+    from .chunker import (
+        SUPPORTED_VIDEO_EXTENSIONS,
+        chunk_video,
+        is_still_frame_chunk,
+        preprocess_chunk,
+        scan_directory,
+    )
     from .embedder import get_embedder, reset_embedder
     from .local_embedder import detect_default_model, normalize_model_key
     from .store import SentryStore
@@ -266,7 +278,8 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
             videos = scan_directory(directory)
 
         if not videos:
-            click.echo("No mp4 files found.")
+            supported = ", ".join(SUPPORTED_VIDEO_EXTENSIONS)
+            click.echo(f"No supported video files found ({supported}).")
             return
 
         store = SentryStore(backend=backend, model=model)
@@ -540,8 +553,7 @@ def overlay(video, output):
 
     video = os.path.abspath(video)
     if output is None:
-        base, ext = os.path.splitext(video)
-        output = f"{base}_overlay{ext}"
+        output = _overlay_output_path(video)
 
     try:
         duration = _get_video_duration(video)
@@ -552,7 +564,7 @@ def overlay(video, output):
         video, video, 0.0, duration, replace=False,
     )
     if success:
-        overlay_path = video.replace(".mp4", "_overlay.mp4")
+        overlay_path = _overlay_output_path(video)
         if output != overlay_path and os.path.isfile(overlay_path):
             os.replace(overlay_path, output)
         click.secho(f"Saved: {output}", fg="green")
