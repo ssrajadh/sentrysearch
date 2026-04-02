@@ -226,7 +226,7 @@ def init():
               help="Target frames per second for preprocessing.")
 @click.option("--skip-still/--no-skip-still", default=True, show_default=True,
               help="Skip chunks with no meaningful visual change.")
-@click.option("--backend", type=click.Choice(["gemini", "local"]), default=None,
+@click.option("--backend", type=click.Choice(["gemini", "local", "minimax"]), default=None,
               help="Embedding backend (default: gemini, or local when --model is set).")
 @click.option("--model", default=None, show_default=False,
               help="Model for local backend: qwen8b, qwen2b, or HuggingFace ID "
@@ -388,7 +388,7 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
               help="Minimum similarity score to consider a confident match.")
 @click.option("--overlay/--no-overlay", default=False, show_default=True,
               help="Burn Tesla telemetry overlay (speed, GPS, turn signals) onto trimmed clip.")
-@click.option("--backend", type=click.Choice(["gemini", "local"]), default=None,
+@click.option("--backend", type=click.Choice(["gemini", "local", "minimax"]), default=None,
               help="Embedding backend (auto-detected from index if omitted).")
 @click.option("--model", default=None, show_default=False,
               help="Model for local backend: qwen8b, qwen2b, or HuggingFace ID "
@@ -598,7 +598,7 @@ def stats():
 # -----------------------------------------------------------------------
 
 @cli.command()
-@click.option("--backend", type=click.Choice(["gemini", "local"]), default=None,
+@click.option("--backend", type=click.Choice(["gemini", "local", "minimax"]), default=None,
               help="Backend to reset (auto-detected if omitted).")
 @click.option("--model", default=None,
               help="Model to reset (auto-detected if omitted). Implies --backend local.")
@@ -634,7 +634,7 @@ def reset(backend, model):
 
 @cli.command()
 @click.argument("files", nargs=-1, required=True)
-@click.option("--backend", type=click.Choice(["gemini", "local"]), default=None,
+@click.option("--backend", type=click.Choice(["gemini", "local", "minimax"]), default=None,
               help="Backend to remove from (auto-detected if omitted).")
 @click.option("--model", default=None,
               help="Model to remove from (auto-detected if omitted). Implies --backend local.")

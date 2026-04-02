@@ -4,7 +4,7 @@ import os
 import re
 import subprocess
 
-from .chunker import _get_ffmpeg_executable, _get_video_duration
+from .chunker import _get_ffmpeg_executable, _get_video_duration, resolve_source_video_path
 
 
 def trim_clip(
@@ -35,6 +35,7 @@ def trim_clip(
             f"end_time ({end_time}) must be greater than start_time ({start_time})."
         )
 
+    source_file = resolve_source_video_path(source_file)
     duration = _get_video_duration(source_file)
     padded_start = max(0.0, start_time - padding)
     padded_end = min(duration, end_time + padding)

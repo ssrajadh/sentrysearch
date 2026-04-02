@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import unicodedata
 from pathlib import Path
 
 
@@ -74,11 +75,103 @@ def _parse_duration_from_ffmpeg_output(stderr_text: str) -> float:
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
+def resolve_source_video_path(video_path: str) -> str:
+    """Return *video_path* if it exists.
+
+    Otherwise try:
+
+    1. Basename with Unicode ellipsis (U+2026) swapped for three ASCII dots,
+       or the reverse.
+    2. If the basename contains U+2026 (common “truncated title” form), list
+       the parent directory and pick the unique file whose name starts with
+       the segment before ``…`` and ends with the segment after (plus the same
+       extension). Skips when zero or multiple files match.
+    3. If (2) finds nothing, try **suffix-only** match (unique file whose name
+       ends with ``right + ext``).
+    4. If still nothing, try files where **both** ``left`` and ``right`` appear
+       as substrings (same extension), comparing after Unicode NFC normalization.
+    5. If the stored path is still wrong but the parent folder contains **exactly
+       one** ``.mp4`` file, use it (last resort when metadata is unusable).
+    """
+    if os.path.isfile(video_path):
+        return video_path
+    parent, base = os.path.split(video_path)
+    if not parent:
+        parent = "."
+    if not os.path.isdir(parent):
+        return video_path
+    alts: list[str] = []
+    if "\u2026" in base:
+        alts.append(base.replace("\u2026", "..."))
+    if "..." in base:
+        alts.append(base.replace("...", "\u2026"))
+    for new_base in alts:
+        alt = os.path.join(parent, new_base)
+        if alt != video_path and os.path.isfile(alt):
+            return alt
+
+    if "\u2026" in base:
+        stem, ext = os.path.splitext(base)
+        left, sep, rest = stem.partition("\u2026")
+        if sep:
+            left, right = left.strip(), rest.strip()
+            if left and right:
+                suffix = right + ext
+                try:
+                    names = os.listdir(parent)
+                except OSError:
+                    return video_path
+                hits = [
+                    n
+                    for n in names
+                    if n.startswith(left)
+                    and n.endswith(suffix)
+                    and os.path.isfile(os.path.join(parent, n))
+                ]
+                if len(hits) == 1:
+                    return os.path.join(parent, hits[0])
+                if len(hits) == 0 and len(right) >= 2:
+                    suf_lo = suffix.lower()
+                    suffix_only = [
+                        n
+                        for n in names
+                        if n.lower().endswith(suf_lo)
+                        and os.path.isfile(os.path.join(parent, n))
+                    ]
+                    if len(suffix_only) == 1:
+                        return os.path.join(parent, suffix_only[0])
+                if len(hits) == 0 and len(left) >= 3 and len(right) >= 2:
+                    ext_lo = ext.lower()
+                    ln = unicodedata.normalize("NFC", left)
+                    rn = unicodedata.normalize("NFC", right)
+                    both = [
+                        n
+                        for n in names
+                        if ln in unicodedata.normalize("NFC", n)
+                        and rn in unicodedata.normalize("NFC", n)
+                        and n.lower().endswith(ext_lo)
+                        and os.path.isfile(os.path.join(parent, n))
+                    ]
+                    if len(both) == 1:
+                        return os.path.join(parent, both[0])
+                if len(hits) == 0:
+                    mp4s = [
+                        n
+                        for n in names
+                        if n.lower().endswith(".mp4")
+                        and os.path.isfile(os.path.join(parent, n))
+                    ]
+                    if len(mp4s) == 1:
+                        return os.path.join(parent, mp4s[0])
+    return video_path
+
+
 def _get_video_duration(video_path: str) -> float:
     """Get the duration of a video file in seconds.
 
     Prefer ffprobe when available. Fallback to parsing ffmpeg stderr.
     """
+    video_path = resolve_source_video_path(video_path)
     ffprobe_exe = shutil.which("ffprobe")
     if ffprobe_exe:
         result = subprocess.run(

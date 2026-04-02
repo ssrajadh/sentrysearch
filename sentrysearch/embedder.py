@@ -24,6 +24,9 @@ def get_embedder(backend: str = "gemini", **kwargs) -> BaseEmbedder:
             dims = kwargs.get("dimensions", 768)
             quantize = kwargs.get("quantize", None)
             _current_embedder = LocalEmbedder(model_name=model, dimensions=dims, quantize=quantize)
+        elif backend == "minimax":
+            from .minimax_embedder import MiniMaxEmbedder
+            _current_embedder = MiniMaxEmbedder()
         else:
             raise ValueError(f"Unknown backend: {backend}")
     return _current_embedder

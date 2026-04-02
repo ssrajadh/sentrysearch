@@ -18,6 +18,8 @@ def _collection_name(backend: str, model: str | None = None) -> str:
     """Return ChromaDB collection name for a backend and optional model."""
     if backend == "gemini":
         return "dashcam_chunks"
+    if backend == "minimax":
+        return "dashcam_chunks_minimax"
     if model:
         return f"dashcam_chunks_local_{model}"
     # Legacy: local backend without model distinction
@@ -42,6 +44,12 @@ def detect_index(db_path: str | Path | None = None) -> tuple[str | None, str | N
         col = client.get_collection("dashcam_chunks")
         if col.count() > 0:
             return "gemini", None
+
+    # MiniMax collection
+    if "dashcam_chunks_minimax" in existing:
+        col = client.get_collection("dashcam_chunks_minimax")
+        if col.count() > 0:
+            return "minimax", None
 
     # Model-specific local collections (dashcam_chunks_local_<model>)
     for name in sorted(existing):
