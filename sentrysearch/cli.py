@@ -274,6 +274,7 @@ def _apply_overlay_to_clip(
 
 
 @click.group()
+@click.version_option(package_name="sentrysearch")
 def cli():
     """Search dashcam footage using natural language queries."""
 

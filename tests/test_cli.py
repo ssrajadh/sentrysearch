@@ -33,6 +33,16 @@ class TestCliGroup:
         assert result.exit_code == 0
         assert "Search dashcam footage" in result.output or "search" in result.output.lower()
 
+    def test_version(self, runner):
+    	 import importlib.metadata
+
+    	 result = runner.invoke(cli, ["--version"])
+
+    	 assert result.exit_code == 0
+
+    	 expected_version = importlib.metadata.version("sentrysearch")
+    	 assert expected_version in result.output
+
 
 class TestModelDashscopeFlagConflict:
     def test_index_rejects_both_model_flags(self, runner, tmp_path):
