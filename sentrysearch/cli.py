@@ -648,8 +648,11 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
                    + _DASHSCOPE_MODEL_FLAG_HELP_SUFFIX)
 @click.option("--quantize/--no-quantize", default=None,
               help="Enable/disable 4-bit quantization for local backend (default: auto-detect).")
+@click.option("--dedupe", "dedupe_threshold", default=None, type=float,
+              help="Drop results whose cosine similarity to a higher-ranked "
+                   "result exceeds this (e.g. 0.9).")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
-def search(query, n_results, output_dir, trim, save_top, threshold, overlay, backend, model, dashscope_model, quantize, verbose):
+def search(query, n_results, output_dir, trim, save_top, threshold, overlay, backend, model, dashscope_model, quantize, dedupe_threshold, verbose):
     """Search indexed footage with a natural language QUERY."""
     from .embedder import get_embedder, reset_embedder
     from .local_embedder import normalize_model_key
@@ -723,7 +726,8 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
         if verbose:
             click.echo(f"  [verbose] backend={backend}, similarity threshold: {threshold}", err=True)
 
-        results = search_footage(query, store, n_results=n_results, verbose=verbose)
+        results = search_footage(query, store, n_results=n_results, verbose=verbose,
+                                 dedupe_threshold=dedupe_threshold)
         _cache_last_search(results, query=query)
         _present_results(results, threshold, trim, save_top, output_dir, overlay, verbose)
 
@@ -816,9 +820,12 @@ def _present_results(results, threshold, trim, save_top, output_dir, overlay, ve
                    + _DASHSCOPE_MODEL_FLAG_HELP_SUFFIX)
 @click.option("--quantize/--no-quantize", default=None,
               help="Enable/disable 4-bit quantization for local backend.")
+@click.option("--dedupe", "dedupe_threshold", default=None, type=float,
+              help="Drop results whose cosine similarity to a higher-ranked "
+                   "result exceeds this (e.g. 0.9).")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
 def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
-        backend, model, dashscope_model, quantize, verbose):
+        backend, model, dashscope_model, quantize, dedupe_threshold, verbose):
     """Search indexed footage using an IMAGE as the query."""
     from .embedder import get_embedder, reset_embedder
     from .local_embedder import normalize_model_key
@@ -871,6 +878,7 @@ def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
 
         results = search_footage_by_image(
             image, store, n_results=n_results, verbose=verbose,
+            dedupe_threshold=dedupe_threshold,
         )
         _cache_last_search(results, image_path=image)
         _present_results(results, threshold, trim, save_top, output_dir, overlay, verbose)

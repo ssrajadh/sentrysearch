@@ -51,3 +51,78 @@ class TestSearchFootage:
             })
         results = search_footage("q", tmp_store, n_results=3)
         assert len(results) == 3
+
+
+class TestSearchDedupe:
+    def test_dedupe_drops_near_duplicates(self, tmp_store, mock_embed_query):
+        base = mock_embed_query
+        near_dup = base.copy()
+        near_dup[0] += 0.001
+        norm = math.sqrt(sum(x * x for x in near_dup))
+        near_dup = [x / norm for x in near_dup]
+
+        distinct = [0.0] * len(base)
+        distinct[0] = 1.0
+
+        tmp_store.add_chunk("c0", base, {
+            "source_file": "a.mp4", "start_time": 0.0, "end_time": 30.0,
+        })
+        tmp_store.add_chunk("c1", near_dup, {
+            "source_file": "b.mp4", "start_time": 0.0, "end_time": 30.0,
+        })
+        tmp_store.add_chunk("c2", distinct, {
+            "source_file": "c.mp4", "start_time": 0.0, "end_time": 30.0,
+        })
+
+        results_no_dedup = search_footage("q", tmp_store, n_results=5)
+        assert len(results_no_dedup) == 3
+
+        results_dedup = search_footage("q", tmp_store, n_results=5,
+                                       dedupe_threshold=0.9)
+        assert len(results_dedup) == 2
+        files = {r["source_file"] for r in results_dedup}
+        assert "a.mp4" in files
+        assert "c.mp4" in files
+
+    def test_dedupe_none_returns_all(self, tmp_store, mock_embed_query):
+        base = mock_embed_query
+        near_dup = base.copy()
+        near_dup[0] += 0.001
+        norm = math.sqrt(sum(x * x for x in near_dup))
+        near_dup = [x / norm for x in near_dup]
+
+        tmp_store.add_chunk("c0", base, {
+            "source_file": "a.mp4", "start_time": 0.0, "end_time": 30.0,
+        })
+        tmp_store.add_chunk("c1", near_dup, {
+            "source_file": "b.mp4", "start_time": 0.0, "end_time": 30.0,
+        })
+
+        results = search_footage("q", tmp_store, n_results=5)
+        assert len(results) == 2
+
+    def test_dedupe_threshold_1_keeps_all(self, tmp_store, mock_embed_query):
+        base = mock_embed_query
+        near_dup = base.copy()
+        near_dup[0] += 0.001
+        norm = math.sqrt(sum(x * x for x in near_dup))
+        near_dup = [x / norm for x in near_dup]
+
+        tmp_store.add_chunk("c0", base, {
+            "source_file": "a.mp4", "start_time": 0.0, "end_time": 30.0,
+        })
+        tmp_store.add_chunk("c1", near_dup, {
+            "source_file": "b.mp4", "start_time": 0.0, "end_time": 30.0,
+        })
+
+        results = search_footage("q", tmp_store, n_results=5,
+                                 dedupe_threshold=1.0)
+        assert len(results) == 2
+
+    def test_dedupe_single_result(self, tmp_store, mock_embed_query):
+        tmp_store.add_chunk("c0", mock_embed_query, {
+            "source_file": "a.mp4", "start_time": 0.0, "end_time": 30.0,
+        })
+        results = search_footage("q", tmp_store, n_results=5,
+                                 dedupe_threshold=0.9)
+        assert len(results) == 1

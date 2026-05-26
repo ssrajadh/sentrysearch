@@ -210,28 +210,37 @@ class SentryStore:
         self,
         query_embedding: list[float],
         n_results: int = 5,
+        include_embeddings: bool = False,
     ) -> list[dict]:
         """Return top N results with distances and metadata."""
         count = self._collection.count()
         if count == 0:
             return []
 
+        include = ["metadatas", "distances"]
+        if include_embeddings:
+            include.append("embeddings")
+
         results = self._collection.query(
             query_embeddings=[query_embedding],
             n_results=min(n_results, count),
+            include=include,
         )
 
         hits = []
         for i in range(len(results["ids"][0])):
             meta = results["metadatas"][0][i]
             distance = results["distances"][0][i]
-            hits.append({
+            hit = {
                 "source_file": meta["source_file"],
                 "start_time": meta["start_time"],
                 "end_time": meta["end_time"],
                 "score": 1.0 - distance,  # cosine distance → similarity
                 "distance": distance,
-            })
+            }
+            if include_embeddings:
+                hit["embedding"] = results["embeddings"][0][i]
+            hits.append(hit)
         return hits
 
     def is_indexed(self, source_file: str) -> bool:
