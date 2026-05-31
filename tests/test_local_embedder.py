@@ -6,7 +6,7 @@ import pytest
 
 from sentrysearch.local_embedder import (
     LocalEmbedder, LocalModelError, MODEL_ALIASES,
-    normalize_model_key, detect_default_model,
+    normalize_model_key, detect_default_model, _cpu_fallback_warning,
 )
 
 
@@ -82,6 +82,26 @@ class TestLocalEmbedderLoadModel:
         embedder._model = MagicMock()  # pretend already loaded
         # Should return immediately without reloading
         embedder._load_model()
+
+
+class TestCpuFallbackWarning:
+    def test_intel_mac_points_to_gemini_backend(self, monkeypatch):
+        monkeypatch.setattr("platform.system", lambda: "Darwin")
+        monkeypatch.setattr("platform.machine", lambda: "x86_64")
+
+        warning = _cpu_fallback_warning()
+
+        assert "Intel Mac" in warning
+        assert "--backend gemini" in warning
+
+    def test_linux_cpu_only_uses_general_warning(self, monkeypatch):
+        monkeypatch.setattr("platform.system", lambda: "Linux")
+        monkeypatch.setattr("platform.machine", lambda: "x86_64")
+
+        warning = _cpu_fallback_warning()
+
+        assert warning == "Warning: No GPU detected, local inference will be very slow."
+        assert "--backend gemini" not in warning
 
 
 class TestNormalizeModelKey:

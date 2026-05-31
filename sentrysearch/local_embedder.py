@@ -6,6 +6,7 @@ Source: https://github.com/QwenLM/Qwen3-VL-Embedding
 """
 
 import os
+import platform
 import sys
 import time
 
@@ -65,6 +66,16 @@ def detect_default_model() -> str:
 
     # CPU-only — 2B is more practical
     return "qwen2b"
+
+
+def _cpu_fallback_warning() -> str:
+    if platform.system() == "Darwin" and platform.machine() == "x86_64":
+        return (
+            "Warning: Intel Macs cannot use Metal acceleration for the "
+            "local backend. CPU inference will be impractically slow; "
+            "use --backend gemini instead."
+        )
+    return "Warning: No GPU detected, local inference will be very slow."
 
 
 class LocalEmbedder(BaseEmbedder):
@@ -131,10 +142,7 @@ class LocalEmbedder(BaseEmbedder):
         else:
             device = "cpu"
             dtype = torch.float32
-            print(
-                "Warning: No GPU detected, local inference will be very slow.",
-                file=sys.stderr,
-            )
+            print(_cpu_fallback_warning(), file=sys.stderr)
 
         # 4-bit quantization: explicit flag or auto-detect
         quantization_config = None
