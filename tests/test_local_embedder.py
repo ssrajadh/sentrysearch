@@ -103,6 +103,15 @@ class TestCpuFallbackWarning:
         assert warning == "Warning: No GPU detected, local inference will be very slow."
         assert "--backend gemini" not in warning
 
+    def test_apple_silicon_cpu_only_uses_general_warning(self, monkeypatch):
+        monkeypatch.setattr("platform.system", lambda: "Darwin")
+        monkeypatch.setattr("platform.machine", lambda: "arm64")
+
+        warning = _cpu_fallback_warning()
+
+        assert warning == "Warning: No GPU detected, local inference will be very slow."
+        assert "--backend gemini" not in warning
+
 
 class TestNormalizeModelKey:
     def test_alias_returned_as_is(self):
