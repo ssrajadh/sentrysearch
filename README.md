@@ -4,7 +4,7 @@ Semantic search over video footage. Type what you're looking for, get a trimmed 
 
 **Languages:** English · [简体中文](README.zh.md)
 
-**New:** [SentrySearch codebase walkthrough video] (https://youtu.be/QkYUSlu_G9g)
+**New:** [SentrySearch codebase walkthrough video](https://youtu.be/QkYUSlu_G9g)
 
 **The Pipeline:**
 1. SentrySearch (find an event in your footage)
