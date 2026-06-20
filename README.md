@@ -2,6 +2,9 @@
 
 Semantic search over video footage. Type what you're looking for, get a trimmed clip back.
 
+> [!IMPORTANT]
+> **Official source:** [github.com/ssrajadh/sentrysearch](https://github.com/ssrajadh/sentrysearch) is the only official home of SentrySearch. Other sites republishing or mirroring this project are not affiliated with or endorsed by the maintainer, always download from this repository.
+
 **Languages:** English · [简体中文](README.zh.md)
 
 **New:** [SentrySearch codebase walkthrough video](https://youtu.be/QkYUSlu_G9g)

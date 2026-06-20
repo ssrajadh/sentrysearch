@@ -4,6 +4,9 @@
 
 对视频素材做语义检索：输入想找的画面描述，自动得到裁剪好的片段。
 
+> [!IMPORTANT]
+> **官方来源：** [github.com/ssrajadh/sentrysearch](https://github.com/ssrajadh/sentrysearch) 是 SentrySearch 唯一的官方仓库。其他转载或镜像本项目的网站均与维护者无关，也未获得授权，请始终从本仓库下载。
+
 **工作流程：**
 1. **SentrySearch**：在素材里用自然语言或图片找到事件对应片段。
 2. **[SentryMerge](https://github.com/ssrajadh/sentrymerge)**：根据搜索结果，把多路摄像头画面自动剪成一条跟随主体的跨镜视频。
