@@ -154,14 +154,19 @@ No confident match found (best score: 0.28). Show results anyway? [y/N]:
 
 With `--no-trim`, low-confidence results are shown with a note instead of a prompt.
 
-Options: `--results N`, `--output-dir DIR`, `--no-trim` to skip auto-trimming, `--threshold 0.5` to adjust the confidence cutoff, `--save-top N` to save the top N clips instead of just the best match, `--dedupe` to drop results too similar to a higher-ranked pick (prevents near-duplicate chunks of the same event from filling the list). Backend and model are auto-detected from the index — pass `--backend` or `--model` only to override.
+Options: `--results N`, `--output-dir DIR`, `--no-trim` to skip auto-trimming, `--threshold 0.5` to adjust the confidence cutoff, `--save-top N` to save the top N clips instead of just the best match, `--dedupe` to drop results too similar to a higher-ranked pick (prevents near-duplicate chunks of the same event from filling the list), and `--rerank` to ask Gemini Flash to re-rank the returned candidates before trimming. Backend and model are auto-detected from the index — pass `--backend` or `--model` only to override.
 
 ```bash
 # Save top 5 clips, dropping near-duplicates
 sentrysearch search "red truck" --save-top 5 --dedupe 0.9
+
+# Re-rank the top 10 embedding matches with Gemini Flash before trimming
+sentrysearch search "pedestrian crossing behind the car" --rerank --results 10
 ```
 
 The `--dedupe` value is a cosine similarity ceiling (0–1). Any result whose similarity to an already-kept higher-ranked result exceeds this value is dropped. Lower values are stricter: `0.8` requires results to be very distinct, `0.95` only removes near-identical chunks. `0.9` is a good default.
+
+`--rerank` extracts each returned candidate clip, sends it to Gemini 2.5 Flash with the query, and sorts likely visual matches ahead of embedding-only results. If a Gemini response cannot be parsed, that candidate keeps its original embedding rank instead of failing the search.
 
 ### Search by image
 
@@ -176,7 +181,7 @@ $ sentrysearch img ~/Downloads/image.jpg
 Saved clip: ./match_2026-03-12_10-44-17-left_repeater_00m00s-00m30s.mp4
 ```
 
-The image is embedded into the same vector space as the indexed video chunks and ranked by cosine similarity. All `search` flags are supported (`--results`, `--threshold`, `--save-top`, `--dedupe`, `--overlay`, `--no-trim`, `--backend`, `--model`).
+The image is embedded into the same vector space as the indexed video chunks and ranked by cosine similarity. Image search supports `--results`, `--threshold`, `--save-top`, `--dedupe`, `--overlay`, `--no-trim`, `--backend`, and `--model`.
 
 Supported formats: JPG, PNG, WEBP, GIF, HEIC/HEIF on the Gemini backend; the local backend additionally accepts anything PIL can decode (BMP, TIFF, etc.).
 

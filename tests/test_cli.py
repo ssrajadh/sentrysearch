@@ -752,6 +752,87 @@ class TestSearchLocalFlags:
         assert result.exit_code != 0
 
 
+class TestSearchRerank:
+    def test_search_rerank_caches_and_presents_reranked_order(self, runner):
+        results = [
+            {"source_file": "/a.mp4", "start_time": 0.0, "end_time": 30.0,
+             "similarity_score": 0.7},
+            {"source_file": "/b.mp4", "start_time": 30.0, "end_time": 60.0,
+             "similarity_score": 0.9},
+        ]
+        reranked = [results[1], results[0]]
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()), \
+             patch("sentrysearch.store.detect_index", return_value=("gemini", None)), \
+             patch("sentrysearch.search.search_footage", return_value=results) as mock_search, \
+             patch("sentrysearch.gemini_reranker.GeminiReranker") as MockReranker, \
+             patch("sentrysearch.reranker.rerank_results", return_value=reranked) as mock_rerank, \
+             patch("sentrysearch.cli._cache_last_search") as mock_cache, \
+             patch("sentrysearch.cli._present_results") as mock_present:
+            inst = MagicMock()
+            inst.get_stats.return_value = {"total_chunks": 5}
+            MockStore.return_value = inst
+
+            result = runner.invoke(cli, ["search", "test", "--rerank"])
+
+        assert result.exit_code == 0, result.output
+        mock_search.assert_called_once()
+        mock_rerank.assert_called_once_with(
+            "test", results, MockReranker.return_value, verbose=False,
+        )
+        mock_cache.assert_called_once_with(reranked, query="test")
+        mock_present.assert_called_once()
+        assert mock_present.call_args[0][0] == reranked
+
+    def test_search_rerank_skips_empty_results(self, runner):
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()), \
+             patch("sentrysearch.store.detect_index", return_value=("gemini", None)), \
+             patch("sentrysearch.search.search_footage", return_value=[]), \
+             patch("sentrysearch.gemini_reranker.GeminiReranker") as MockReranker, \
+             patch("sentrysearch.reranker.rerank_results") as mock_rerank, \
+             patch("sentrysearch.cli._cache_last_search") as mock_cache, \
+             patch("sentrysearch.cli._present_results") as mock_present:
+            inst = MagicMock()
+            inst.get_stats.return_value = {"total_chunks": 5}
+            MockStore.return_value = inst
+
+            result = runner.invoke(cli, ["search", "test", "--rerank"])
+
+        assert result.exit_code == 0, result.output
+        MockReranker.assert_not_called()
+        mock_rerank.assert_not_called()
+        mock_cache.assert_called_once_with([], query="test")
+        mock_present.assert_called_once()
+
+    def test_search_dedupe_runs_before_rerank(self, runner):
+        deduped = [
+            {"source_file": "/a.mp4", "start_time": 0.0, "end_time": 30.0,
+             "similarity_score": 0.9},
+        ]
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()), \
+             patch("sentrysearch.store.detect_index", return_value=("gemini", None)), \
+             patch("sentrysearch.search.search_footage", return_value=deduped) as mock_search, \
+             patch("sentrysearch.gemini_reranker.GeminiReranker") as MockReranker, \
+             patch("sentrysearch.reranker.rerank_results", return_value=deduped) as mock_rerank, \
+             patch("sentrysearch.cli._cache_last_search"), \
+             patch("sentrysearch.cli._present_results"):
+            inst = MagicMock()
+            inst.get_stats.return_value = {"total_chunks": 5}
+            MockStore.return_value = inst
+
+            result = runner.invoke(
+                cli, ["search", "test", "--dedupe", "0.9", "--rerank"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert mock_search.call_args.kwargs["dedupe_threshold"] == 0.9
+        mock_rerank.assert_called_once_with(
+            "test", deduped, MockReranker.return_value, verbose=False,
+        )
+
+
 class TestLastClipCache:
     @pytest.fixture(autouse=True)
     def _isolated_cache(self, tmp_path, monkeypatch):
