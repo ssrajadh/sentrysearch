@@ -783,6 +783,7 @@ class TestSearchRerank:
         mock_cache.assert_called_once_with(reranked, query="test")
         mock_present.assert_called_once()
         assert mock_present.call_args[0][0] == reranked
+        assert mock_present.call_args.kwargs["rerank_enabled"] is True
 
     def test_search_rerank_skips_empty_results(self, runner):
         with patch("sentrysearch.store.SentryStore") as MockStore, \
@@ -804,6 +805,7 @@ class TestSearchRerank:
         mock_rerank.assert_not_called()
         mock_cache.assert_called_once_with([], query="test")
         mock_present.assert_called_once()
+        assert mock_present.call_args.kwargs["rerank_enabled"] is True
 
     def test_search_dedupe_runs_before_rerank(self, runner):
         deduped = [
@@ -831,6 +833,112 @@ class TestSearchRerank:
         mock_rerank.assert_called_once_with(
             "test", deduped, MockReranker.return_value, verbose=False,
         )
+
+    def test_rerank_match_trims_despite_low_embedding_score(self, runner):
+        results = [
+            {"source_file": "/a.mp4", "start_time": 0.0, "end_time": 30.0,
+             "similarity_score": 0.2},
+        ]
+        reranked = [
+            {**results[0], "rerank_match": True, "rerank_confidence": 0.64},
+        ]
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()), \
+             patch("sentrysearch.store.detect_index", return_value=("gemini", None)), \
+             patch("sentrysearch.search.search_footage", return_value=results), \
+             patch("sentrysearch.gemini_reranker.GeminiReranker"), \
+             patch("sentrysearch.reranker.rerank_results", return_value=reranked), \
+             patch("sentrysearch.trimmer.trim_top_results",
+                   return_value=["/clip.mp4"]) as mock_trim, \
+             patch("sentrysearch.cli._cache_last_clip"), \
+             patch("sentrysearch.cli._open_file"):
+            inst = MagicMock()
+            inst.get_stats.return_value = {"total_chunks": 5}
+            MockStore.return_value = inst
+
+            result = runner.invoke(cli, ["search", "test", "--rerank"])
+
+        assert result.exit_code == 0, result.output
+        assert "No confident match found" not in result.output
+        mock_trim.assert_called_once()
+
+    def test_rerank_non_match_prompts_despite_high_embedding_score(self, runner):
+        results = [
+            {"source_file": "/a.mp4", "start_time": 0.0, "end_time": 30.0,
+             "similarity_score": 0.95},
+        ]
+        reranked = [
+            {**results[0], "rerank_match": False, "rerank_confidence": 0.12},
+        ]
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()), \
+             patch("sentrysearch.store.detect_index", return_value=("gemini", None)), \
+             patch("sentrysearch.search.search_footage", return_value=results), \
+             patch("sentrysearch.gemini_reranker.GeminiReranker"), \
+             patch("sentrysearch.reranker.rerank_results", return_value=reranked), \
+             patch("sentrysearch.trimmer.trim_top_results") as mock_trim:
+            inst = MagicMock()
+            inst.get_stats.return_value = {"total_chunks": 5}
+            MockStore.return_value = inst
+
+            result = runner.invoke(
+                cli, ["search", "test", "--rerank"], input="n\n",
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "No confident match found" in result.output
+        assert "VLM match=false" in result.output
+        assert "rerank confidence: 0.12" in result.output
+        assert "embedding score: 0.95" in result.output
+        mock_trim.assert_not_called()
+
+    def test_rerank_missing_score_fields_falls_back_to_embedding_threshold(
+        self, runner,
+    ):
+        results = [
+            {"source_file": "/a.mp4", "start_time": 0.0, "end_time": 30.0,
+             "similarity_score": 0.2},
+        ]
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()), \
+             patch("sentrysearch.store.detect_index", return_value=("gemini", None)), \
+             patch("sentrysearch.search.search_footage", return_value=results), \
+             patch("sentrysearch.gemini_reranker.GeminiReranker"), \
+             patch("sentrysearch.reranker.rerank_results", return_value=results), \
+             patch("sentrysearch.trimmer.trim_top_results") as mock_trim:
+            inst = MagicMock()
+            inst.get_stats.return_value = {"total_chunks": 5}
+            MockStore.return_value = inst
+
+            result = runner.invoke(
+                cli, ["search", "test", "--rerank"], input="n\n",
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "No confident match found" in result.output
+        assert "best score: 0.20" in result.output
+        mock_trim.assert_not_called()
+
+    def test_non_rerank_low_embedding_score_still_prompts(self, runner):
+        results = [
+            {"source_file": "/a.mp4", "start_time": 0.0, "end_time": 30.0,
+             "similarity_score": 0.2},
+        ]
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()), \
+             patch("sentrysearch.store.detect_index", return_value=("gemini", None)), \
+             patch("sentrysearch.search.search_footage", return_value=results), \
+             patch("sentrysearch.trimmer.trim_top_results") as mock_trim:
+            inst = MagicMock()
+            inst.get_stats.return_value = {"total_chunks": 5}
+            MockStore.return_value = inst
+
+            result = runner.invoke(cli, ["search", "test"], input="n\n")
+
+        assert result.exit_code == 0, result.output
+        assert "No confident match found" in result.output
+        assert "best score: 0.20" in result.output
+        mock_trim.assert_not_called()
 
 
 class TestLastClipCache:

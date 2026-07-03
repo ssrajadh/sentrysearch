@@ -738,7 +738,10 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
                 query, results, GeminiReranker(), verbose=verbose,
             )
         _cache_last_search(results, query=query)
-        _present_results(results, threshold, trim, save_top, output_dir, overlay, verbose)
+        _present_results(
+            results, threshold, trim, save_top, output_dir, overlay, verbose,
+            rerank_enabled=rerank,
+        )
 
     except Exception as e:
         _handle_error(e)
@@ -746,7 +749,10 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
         reset_embedder()
 
 
-def _present_results(results, threshold, trim, save_top, output_dir, overlay, verbose):
+def _present_results(
+    results, threshold, trim, save_top, output_dir, overlay, verbose, *,
+    rerank_enabled=False,
+):
     if not results:
         click.echo(
             "No results found.\n\n"
@@ -757,12 +763,30 @@ def _present_results(results, threshold, trim, save_top, output_dir, overlay, ve
         )
         return
 
-    best_score = results[0]["similarity_score"]
-    low_confidence = best_score < threshold
+    best = results[0]
+    best_score = best["similarity_score"]
+    rerank_match = best.get("rerank_match")
+    rerank_confidence = best.get("rerank_confidence")
+    has_rerank_score = (
+        rerank_enabled
+        and isinstance(rerank_match, bool)
+        and not isinstance(rerank_confidence, bool)
+        and isinstance(rerank_confidence, (int, float))
+    )
+    if has_rerank_score:
+        low_confidence = not rerank_match
+        low_confidence_detail = (
+            f"VLM match={str(rerank_match).lower()}, "
+            f"rerank confidence: {rerank_confidence:.2f}, "
+            f"embedding score: {best_score:.2f}"
+        )
+    else:
+        low_confidence = best_score < threshold
+        low_confidence_detail = f"best score: {best_score:.2f}"
 
     if low_confidence and not trim:
         click.secho(
-            f"(low confidence — best score: {best_score:.2f})",
+            f"(low confidence — {low_confidence_detail})",
             fg="yellow",
             err=True,
         )
@@ -781,7 +805,7 @@ def _present_results(results, threshold, trim, save_top, output_dir, overlay, ve
     if should_trim:
         if low_confidence:
             if not click.confirm(
-                f"No confident match found (best score: {best_score:.2f}). "
+                f"No confident match found ({low_confidence_detail}). "
                 "Show results anyway?",
                 default=False,
             ):
