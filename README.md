@@ -397,7 +397,7 @@ SentrySearch keeps local state under `~/.sentrysearch/`:
 | `db/` | `sentrysearch index` | ChromaDB vector index for your embedded footage. | Yes, but this deletes the index. Re-run `sentrysearch index <dir>` before searching again. |
 | `.env` | `sentrysearch init` | Stores your Gemini API key for the default backend. | Yes, but Gemini-backed commands will ask you to configure a key again. |
 | `dlq.json` | Failed `sentrysearch index` chunks | Dead-letter queue inspected by `sentrysearch dlq list` and retried with `--retry-failed`. | Yes. Deleting it forgets failed chunks, so future index runs may try them again as new work. |
-| `last_clip.json` | `sentrysearch search` when a clip is saved | Lets SentryBlur consume the most recent saved clip with `sentryblur ... --last`. | Yes. Only the `--last` handoff is lost; saved MP4 files are not deleted. |
+| `last_clip.json` | Commands that save a clip (`search`, `img`, `highlights`, `overlay`) | Lets SentryBlur consume the most recent saved clip with `sentryblur ... --last`. | Yes. Only the `--last` handoff is lost; saved MP4 files are not deleted. |
 | `last_search.json` | `sentrysearch search`, `img`, and `highlights` | Lets SentryMerge consume the most recent result list with `sentrymerge --last`. | Yes. Only the `--last` handoff is lost; the search index is unchanged. |
 | `history` | `sentrysearch shell` | Readline command history for the interactive shell. | Yes. The shell starts with empty history next time. |
 
