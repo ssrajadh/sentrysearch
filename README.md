@@ -33,6 +33,8 @@ Semantic search over video footage. Type what you're looking for, get a trimmed 
   - [Stitch with SentryMerge](#stitch-with-sentrymerge)
   - [Redact with SentryBlur](#redact-with-sentryblur)
   - [Managing the index](#managing-the-index)
+    - [Failed chunks and retrying](#failed-chunks-and-retrying)
+    - [Cache and state files](#cache-and-state-files)
   - [Verbose mode](#verbose-mode)
 - [How is this possible?](#how-is-this-possible)
 - [Cost](#cost)
@@ -353,6 +355,51 @@ sentrysearch remove path/to/footage
 # Wipe the entire index
 sentrysearch reset
 ```
+
+#### Failed chunks and retrying
+
+If a chunk cannot be embedded after retries, SentrySearch records it in a
+dead-letter queue (DLQ) at `~/.sentrysearch/dlq.json` and continues indexing
+the rest of your footage. Chunks usually land there because of repeated
+transient API/backend failures, decoder errors for a specific file, missing
+files, or out-of-memory errors. Permanent-looking failures such as missing
+files, decode errors, and OOM are recorded immediately because retrying the
+same chunk with the same settings is unlikely to help.
+
+Inspect failed chunks:
+
+```bash
+sentrysearch dlq list
+```
+
+Retry them on the next index run:
+
+```bash
+sentrysearch index /path/to/footage --retry-failed
+```
+
+Clear the DLQ without retrying:
+
+```bash
+sentrysearch dlq clear
+```
+
+By default, future `sentrysearch index` runs skip chunks already in the DLQ so
+you do not repeatedly pay for or wait on failures. Use `--retry-failed` after
+fixing the source problem, changing model/backend settings, or freeing memory.
+
+#### Cache and state files
+
+SentrySearch keeps local state under `~/.sentrysearch/`:
+
+| Path | Written by | Used for | Safe to delete? |
+|---|---|---|---|
+| `db/` | `sentrysearch index` | ChromaDB vector index for your embedded footage. | Yes, but this deletes the index. Re-run `sentrysearch index <dir>` before searching again. |
+| `.env` | `sentrysearch init` | Stores your Gemini API key for the default backend. | Yes, but Gemini-backed commands will ask you to configure a key again. |
+| `dlq.json` | Failed `sentrysearch index` chunks | Dead-letter queue inspected by `sentrysearch dlq list` and retried with `--retry-failed`. | Yes. Deleting it forgets failed chunks, so future index runs may try them again as new work. |
+| `last_clip.json` | `sentrysearch search` when a clip is saved | Lets SentryBlur consume the most recent saved clip with `sentryblur ... --last`. | Yes. Only the `--last` handoff is lost; saved MP4 files are not deleted. |
+| `last_search.json` | `sentrysearch search`, `img`, and `highlights` | Lets SentryMerge consume the most recent result list with `sentrymerge --last`. | Yes. Only the `--last` handoff is lost; the search index is unchanged. |
+| `history` | `sentrysearch shell` | Readline command history for the interactive shell. | Yes. The shell starts with empty history next time. |
 
 ### Verbose mode
 
