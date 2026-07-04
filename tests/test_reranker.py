@@ -54,7 +54,9 @@ class TestParseRerankResponse:
 
 
 class TestRerankResults:
-    def test_sorts_matches_by_confidence_then_embedding_rank(self, monkeypatch):
+    def test_sorts_matches_by_confidence_then_embedding_rank(
+        self, monkeypatch, tmp_path,
+    ):
         results = [_result("a"), _result("b"), _result("c"), _result("d")]
         scores = [
             None,
@@ -71,7 +73,9 @@ class TestRerankResults:
             lambda *args, **kwargs: args[3],
         )
 
-        reranked = rerank_results("query", results, reranker)
+        reranked = rerank_results(
+            "query", results, reranker, candidate_dir=str(tmp_path),
+        )
         assert [r["source_file"] for r in reranked] == [
             "/videos/b.mp4",
             "/videos/d.mp4",
@@ -79,7 +83,7 @@ class TestRerankResults:
             "/videos/c.mp4",
         ]
 
-    def test_invalid_scores_preserve_embedding_order(self, monkeypatch):
+    def test_invalid_scores_preserve_embedding_order(self, monkeypatch, tmp_path):
         results = [_result("a"), _result("b"), _result("c")]
         reranker = type("FakeReranker", (), {
             "score": lambda self, *args, **kwargs: None,
@@ -90,15 +94,23 @@ class TestRerankResults:
             lambda *args, **kwargs: args[3],
         )
 
-        reranked = rerank_results("query", results, reranker)
-        assert reranked == results
+        reranked = rerank_results(
+            "query", results, reranker, candidate_dir=str(tmp_path),
+        )
+        assert [r["source_file"] for r in reranked] == [
+            "/videos/a.mp4",
+            "/videos/b.mp4",
+            "/videos/c.mp4",
+        ]
+        assert all("_rerank_clip_path" in r for r in reranked)
+        assert all("rerank_match" not in r for r in reranked)
 
-    def test_extracts_candidate_before_scoring(self, monkeypatch):
+    def test_extracts_candidate_before_scoring(self, monkeypatch, tmp_path):
         events = []
         results = [_result("a"), _result("b")]
 
-        def fake_trim(source_file, start_time, end_time, output_path, *, padding):
-            events.append(("trim", source_file, padding))
+        def fake_trim(source_file, start_time, end_time, output_path, **kwargs):
+            events.append(("trim", source_file, kwargs))
             return output_path
 
         class FakeReranker:
@@ -108,17 +120,21 @@ class TestRerankResults:
 
         monkeypatch.setattr("sentrysearch.reranker.trim_clip", fake_trim)
 
-        rerank_results("query", results, FakeReranker(), verbose=True)
+        rerank_results(
+            "query", results, FakeReranker(),
+            candidate_dir=str(tmp_path),
+            verbose=True,
+        )
 
-        assert events[0] == ("trim", "/videos/a.mp4", 0.0)
+        assert events[0] == ("trim", "/videos/a.mp4", {})
         assert events[1][0] == "score"
-        assert events[2] == ("trim", "/videos/b.mp4", 0.0)
+        assert events[2] == ("trim", "/videos/b.mp4", {})
         assert events[3][0] == "score"
 
-    def test_trim_failure_falls_back_to_embedding_rank(self, monkeypatch):
+    def test_trim_failure_falls_back_to_embedding_rank(self, monkeypatch, tmp_path):
         results = [_result("a"), _result("b"), _result("c"), _result("d")]
 
-        def fake_trim(source_file, start_time, end_time, output_path, *, padding):
+        def fake_trim(source_file, start_time, end_time, output_path):
             if source_file == "/videos/b.mp4":
                 raise RuntimeError("bad trim")
             return output_path
@@ -133,7 +149,9 @@ class TestRerankResults:
 
         monkeypatch.setattr("sentrysearch.reranker.trim_clip", fake_trim)
 
-        reranked = rerank_results("query", results, FakeReranker())
+        reranked = rerank_results(
+            "query", results, FakeReranker(), candidate_dir=str(tmp_path),
+        )
 
         assert [r["source_file"] for r in reranked] == [
             "/videos/c.mp4",
@@ -142,9 +160,10 @@ class TestRerankResults:
             "/videos/d.mp4",
         ]
         assert "rerank_match" not in reranked[2]
+        assert "_rerank_clip_path" not in reranked[2]
 
     def test_score_failure_falls_back_and_valid_scores_still_reorder(
-        self, monkeypatch,
+        self, monkeypatch, tmp_path,
     ):
         results = [_result("a"), _result("b"), _result("c")]
 
@@ -161,7 +180,9 @@ class TestRerankResults:
                     return RerankScore(True, 0.8)
                 return RerankScore(False, 0.9)
 
-        reranked = rerank_results("query", results, FakeReranker())
+        reranked = rerank_results(
+            "query", results, FakeReranker(), candidate_dir=str(tmp_path),
+        )
 
         assert [r["source_file"] for r in reranked] == [
             "/videos/b.mp4",
@@ -169,8 +190,11 @@ class TestRerankResults:
             "/videos/c.mp4",
         ]
         assert "rerank_match" not in reranked[1]
+        assert "_rerank_clip_path" in reranked[1]
 
-    def test_candidate_failure_logs_only_when_verbose(self, monkeypatch, capsys):
+    def test_candidate_failure_logs_only_when_verbose(
+        self, monkeypatch, capsys, tmp_path,
+    ):
         results = [_result("a")]
 
         def fake_trim(*args, **kwargs):
@@ -182,15 +206,23 @@ class TestRerankResults:
 
         monkeypatch.setattr("sentrysearch.reranker.trim_clip", fake_trim)
 
-        rerank_results("query", results, FakeReranker())
+        rerank_results(
+            "query", results, FakeReranker(), candidate_dir=str(tmp_path),
+        )
         assert capsys.readouterr().err == ""
 
-        rerank_results("query", results, FakeReranker(), verbose=True)
+        rerank_results(
+            "query", results, FakeReranker(),
+            candidate_dir=str(tmp_path),
+            verbose=True,
+        )
         assert "rerank candidate #1 fallback: bad trim" in capsys.readouterr().err
 
-    def test_empty_results_do_not_score(self):
+    def test_empty_results_do_not_score(self, tmp_path):
         class FakeReranker:
             def score(self, *args, **kwargs):
                 raise AssertionError("should not score empty results")
 
-        assert rerank_results("query", [], FakeReranker()) == []
+        assert rerank_results(
+            "query", [], FakeReranker(), candidate_dir=str(tmp_path),
+        ) == []

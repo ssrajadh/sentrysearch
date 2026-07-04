@@ -1,7 +1,7 @@
 """Tests for sentrysearch.cli (Click CLI)."""
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -760,15 +760,28 @@ class TestSearchRerank:
             {"source_file": "/b.mp4", "start_time": 30.0, "end_time": 60.0,
              "similarity_score": 0.9},
         ]
-        reranked = [results[1], results[0]]
+        presented_results = []
+
+        def fake_rerank(query, search_results, reranker, *, candidate_dir, verbose):
+            clip_path = os.path.join(candidate_dir, "candidate_001.mp4")
+            with open(clip_path, "wb") as f:
+                f.write(b"candidate")
+            return [{**results[1], "_rerank_clip_path": clip_path}, results[0]]
+
+        def fake_present(search_results, *args, **kwargs):
+            presented_results.extend(search_results)
+            assert os.path.isfile(search_results[0]["_rerank_clip_path"])
+
         with patch("sentrysearch.store.SentryStore") as MockStore, \
              patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()), \
              patch("sentrysearch.store.detect_index", return_value=("gemini", None)), \
              patch("sentrysearch.search.search_footage", return_value=results) as mock_search, \
              patch("sentrysearch.gemini_reranker.GeminiReranker") as MockReranker, \
-             patch("sentrysearch.reranker.rerank_results", return_value=reranked) as mock_rerank, \
+             patch("sentrysearch.reranker.rerank_results",
+                   side_effect=fake_rerank) as mock_rerank, \
              patch("sentrysearch.cli._cache_last_search") as mock_cache, \
-             patch("sentrysearch.cli._present_results") as mock_present:
+             patch("sentrysearch.cli._present_results",
+                   side_effect=fake_present) as mock_present:
             inst = MagicMock()
             inst.get_stats.return_value = {"total_chunks": 5}
             MockStore.return_value = inst
@@ -778,11 +791,15 @@ class TestSearchRerank:
         assert result.exit_code == 0, result.output
         mock_search.assert_called_once()
         mock_rerank.assert_called_once_with(
-            "test", results, MockReranker.return_value, verbose=False,
+            "test", results, MockReranker.return_value,
+            candidate_dir=ANY,
+            verbose=False,
         )
-        mock_cache.assert_called_once_with(reranked, query="test")
+        mock_cache.assert_called_once_with([results[1], results[0]], query="test")
         mock_present.assert_called_once()
-        assert mock_present.call_args[0][0] == reranked
+        assert presented_results[0]["_rerank_clip_path"].endswith(
+            "candidate_001.mp4",
+        )
         assert mock_present.call_args.kwargs["rerank_enabled"] is True
 
     def test_search_rerank_skips_empty_results(self, runner):
@@ -864,7 +881,9 @@ class TestSearchRerank:
         assert result.exit_code == 0, result.output
         assert mock_search.call_args.kwargs["dedupe_threshold"] == 0.9
         mock_rerank.assert_called_once_with(
-            "test", deduped, MockReranker.return_value, verbose=False,
+            "test", deduped, MockReranker.return_value,
+            candidate_dir=ANY,
+            verbose=False,
         )
 
     def test_rerank_match_trims_despite_low_embedding_score(self, runner):

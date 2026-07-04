@@ -2,6 +2,7 @@
 
 import os
 import re
+import shutil
 import subprocess
 
 from .chunker import _get_ffmpeg_executable, _get_video_duration
@@ -154,12 +155,19 @@ def trim_top_results(results: list[dict], output_dir: str, count: int = 1) -> li
     for r in results[:count]:
         filename = _safe_filename(r["source_file"], r["start_time"], r["end_time"])
         output_path = os.path.join(output_dir, filename)
-        clip = trim_clip(
-            source_file=r["source_file"],
-            start_time=r["start_time"],
-            end_time=r["end_time"],
-            output_path=output_path,
-        )
+        reusable_clip = r.get("_rerank_clip_path")
+        if reusable_clip and os.path.isfile(reusable_clip):
+            out_dir = os.path.dirname(output_path) or "."
+            os.makedirs(out_dir, exist_ok=True)
+            shutil.copy2(reusable_clip, output_path)
+            clip = output_path
+        else:
+            clip = trim_clip(
+                source_file=r["source_file"],
+                start_time=r["start_time"],
+                end_time=r["end_time"],
+                output_path=output_path,
+            )
         paths.append(clip)
 
     return paths

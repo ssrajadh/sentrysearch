@@ -91,6 +91,13 @@ def _cache_last_search(
         )
 
 
+def _strip_private_result_fields(results: list[dict]) -> list[dict]:
+    return [
+        {key: value for key, value in result.items() if not key.startswith("_")}
+        for result in results
+    ]
+
+
 def _open_file(path: str) -> None:
     """Open a file with the system's default application."""
     try:
@@ -747,10 +754,27 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
                 )
                 rerank_enabled = False
             else:
-                results = rerank_results(
-                    query, results, reranker, verbose=verbose,
-                )
-        _cache_last_search(results, query=query)
+                import tempfile
+
+                with tempfile.TemporaryDirectory(
+                    prefix="sentrysearch_rerank_",
+                ) as candidate_dir:
+                    results = rerank_results(
+                        query, results, reranker,
+                        candidate_dir=candidate_dir,
+                        verbose=verbose,
+                    )
+                    _cache_last_search(
+                        _strip_private_result_fields(results), query=query,
+                    )
+                    _present_results(
+                        results, threshold, trim, save_top, output_dir,
+                        overlay, verbose, rerank_enabled=rerank_enabled,
+                    )
+                    return
+        _cache_last_search(
+            _strip_private_result_fields(results), query=query,
+        )
         _present_results(
             results, threshold, trim, save_top, output_dir, overlay, verbose,
             rerank_enabled=rerank_enabled,

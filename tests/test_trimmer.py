@@ -108,6 +108,64 @@ class TestTrimTopResults:
         assert len(clips) == 1
         assert os.path.isfile(clips[0])
 
+    def test_reuses_rerank_clip_path(self, tmp_path, monkeypatch):
+        reusable = tmp_path / "candidate.mp4"
+        reusable.write_bytes(b"candidate-clip")
+        output_dir = tmp_path / "out"
+        results = [
+            {
+                "source_file": "/videos/a.mp4",
+                "start_time": 0.5,
+                "end_time": 1.5,
+                "similarity_score": 0.95,
+                "_rerank_clip_path": str(reusable),
+            },
+        ]
+
+        def fail_trim(*args, **kwargs):
+            raise AssertionError("should reuse rerank clip")
+
+        monkeypatch.setattr("sentrysearch.trimmer.trim_clip", fail_trim)
+
+        clips = trim_top_results(results, str(output_dir), count=1)
+
+        assert len(clips) == 1
+        assert os.path.isfile(clips[0])
+        with open(clips[0], "rb") as f:
+            assert f.read() == b"candidate-clip"
+        assert reusable.exists()
+
+    def test_missing_rerank_clip_path_falls_back_to_trim(
+        self, tmp_path, monkeypatch,
+    ):
+        output_dir = tmp_path / "out"
+        results = [
+            {
+                "source_file": "/videos/a.mp4",
+                "start_time": 0.5,
+                "end_time": 1.5,
+                "similarity_score": 0.95,
+                "_rerank_clip_path": str(tmp_path / "missing.mp4"),
+            },
+        ]
+        calls = []
+
+        def fake_trim(source_file, start_time, end_time, output_path):
+            calls.append((source_file, start_time, end_time, output_path))
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            with open(output_path, "wb") as f:
+                f.write(b"trimmed")
+            return output_path
+
+        monkeypatch.setattr("sentrysearch.trimmer.trim_clip", fake_trim)
+
+        clips = trim_top_results(results, str(output_dir), count=1)
+
+        assert len(calls) == 1
+        assert clips == [calls[0][3]]
+        with open(clips[0], "rb") as f:
+            assert f.read() == b"trimmed"
+
     def test_empty_results_raises(self, tmp_path):
         with pytest.raises(ValueError, match="No results"):
             trim_top_results([], str(tmp_path))

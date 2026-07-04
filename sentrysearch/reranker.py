@@ -6,7 +6,6 @@ import json
 import math
 import os
 import sys
-import tempfile
 from dataclasses import dataclass
 
 from .trimmer import trim_clip
@@ -70,6 +69,7 @@ def rerank_results(
     results: list[dict],
     reranker,
     *,
+    candidate_dir: str,
     verbose: bool = False,
 ) -> list[dict]:
     """Extract candidate clips, score them with *reranker*, and reorder results."""
@@ -77,31 +77,30 @@ def rerank_results(
         return []
 
     scored: list[tuple[dict, int, RerankScore | None]] = []
-    with tempfile.TemporaryDirectory(prefix="sentrysearch_rerank_") as tmp_dir:
-        for original_rank, result in enumerate(results):
-            reranked = dict(result)
-            score = None
-            clip_path = os.path.join(tmp_dir, f"candidate_{original_rank:03d}.mp4")
-            try:
-                trim_clip(
-                    result["source_file"],
-                    result["start_time"],
-                    result["end_time"],
-                    clip_path,
-                    padding=0.0,
+    for original_rank, result in enumerate(results):
+        reranked = dict(result)
+        score = None
+        clip_path = os.path.join(candidate_dir, f"candidate_{original_rank:03d}.mp4")
+        try:
+            clip_path = trim_clip(
+                result["source_file"],
+                result["start_time"],
+                result["end_time"],
+                clip_path,
+            )
+            reranked["_rerank_clip_path"] = clip_path
+            score = reranker.score(query, clip_path, verbose=verbose)
+        except Exception as exc:
+            if verbose:
+                print(
+                    f"  [verbose] rerank candidate #{original_rank + 1} "
+                    f"fallback: {exc}",
+                    file=sys.stderr,
                 )
-                score = reranker.score(query, clip_path, verbose=verbose)
-            except Exception as exc:
-                if verbose:
-                    print(
-                        f"  [verbose] rerank candidate #{original_rank + 1} "
-                        f"fallback: {exc}",
-                        file=sys.stderr,
-                    )
-            if score is not None:
-                reranked["rerank_match"] = score.rerank_match
-                reranked["rerank_confidence"] = score.rerank_confidence
-            scored.append((reranked, original_rank, score))
+        if score is not None:
+            reranked["rerank_match"] = score.rerank_match
+            reranked["rerank_confidence"] = score.rerank_confidence
+        scored.append((reranked, original_rank, score))
 
     scored.sort(key=_sort_key)
     return [result for result, _rank, _score in scored]
