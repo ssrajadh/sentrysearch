@@ -115,6 +115,79 @@ class TestRerankResults:
         assert events[2] == ("trim", "/videos/b.mp4", 0.0)
         assert events[3][0] == "score"
 
+    def test_trim_failure_falls_back_to_embedding_rank(self, monkeypatch):
+        results = [_result("a"), _result("b"), _result("c"), _result("d")]
+
+        def fake_trim(source_file, start_time, end_time, output_path, *, padding):
+            if source_file == "/videos/b.mp4":
+                raise RuntimeError("bad trim")
+            return output_path
+
+        class FakeReranker:
+            def score(self, query, clip_path, *, verbose=False):
+                if clip_path.endswith("candidate_002.mp4"):
+                    return RerankScore(True, 0.5)
+                if clip_path.endswith("candidate_003.mp4"):
+                    return RerankScore(False, 0.9)
+                return None
+
+        monkeypatch.setattr("sentrysearch.reranker.trim_clip", fake_trim)
+
+        reranked = rerank_results("query", results, FakeReranker())
+
+        assert [r["source_file"] for r in reranked] == [
+            "/videos/c.mp4",
+            "/videos/a.mp4",
+            "/videos/b.mp4",
+            "/videos/d.mp4",
+        ]
+        assert "rerank_match" not in reranked[2]
+
+    def test_score_failure_falls_back_and_valid_scores_still_reorder(
+        self, monkeypatch,
+    ):
+        results = [_result("a"), _result("b"), _result("c")]
+
+        monkeypatch.setattr(
+            "sentrysearch.reranker.trim_clip",
+            lambda *args, **kwargs: args[3],
+        )
+
+        class FakeReranker:
+            def score(self, query, clip_path, *, verbose=False):
+                if clip_path.endswith("candidate_000.mp4"):
+                    raise RuntimeError("quota hit")
+                if clip_path.endswith("candidate_001.mp4"):
+                    return RerankScore(True, 0.8)
+                return RerankScore(False, 0.9)
+
+        reranked = rerank_results("query", results, FakeReranker())
+
+        assert [r["source_file"] for r in reranked] == [
+            "/videos/b.mp4",
+            "/videos/a.mp4",
+            "/videos/c.mp4",
+        ]
+        assert "rerank_match" not in reranked[1]
+
+    def test_candidate_failure_logs_only_when_verbose(self, monkeypatch, capsys):
+        results = [_result("a")]
+
+        def fake_trim(*args, **kwargs):
+            raise RuntimeError("bad trim")
+
+        class FakeReranker:
+            def score(self, *args, **kwargs):
+                raise AssertionError("trim failure should skip scoring")
+
+        monkeypatch.setattr("sentrysearch.reranker.trim_clip", fake_trim)
+
+        rerank_results("query", results, FakeReranker())
+        assert capsys.readouterr().err == ""
+
+        rerank_results("query", results, FakeReranker(), verbose=True)
+        assert "rerank candidate #1 fallback: bad trim" in capsys.readouterr().err
+
     def test_empty_results_do_not_score(self):
         class FakeReranker:
             def score(self, *args, **kwargs):

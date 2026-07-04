@@ -807,6 +807,39 @@ class TestSearchRerank:
         mock_present.assert_called_once()
         assert mock_present.call_args.kwargs["rerank_enabled"] is True
 
+    def test_search_rerank_missing_key_falls_back_to_embedding_results(
+        self, runner,
+    ):
+        from sentrysearch.gemini_embedder import GeminiAPIKeyError
+
+        results = [
+            {"source_file": "/a.mp4", "start_time": 0.0, "end_time": 30.0,
+             "similarity_score": 0.7},
+        ]
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()), \
+             patch("sentrysearch.store.detect_index", return_value=("local", "qwen2b")), \
+             patch("sentrysearch.search.search_footage", return_value=results), \
+             patch("sentrysearch.gemini_reranker.GeminiReranker",
+                   side_effect=GeminiAPIKeyError("GEMINI_API_KEY is not set.")) as MockReranker, \
+             patch("sentrysearch.reranker.rerank_results") as mock_rerank, \
+             patch("sentrysearch.cli._cache_last_search") as mock_cache, \
+             patch("sentrysearch.cli._present_results") as mock_present:
+            inst = MagicMock()
+            inst.get_stats.return_value = {"total_chunks": 5}
+            MockStore.return_value = inst
+
+            result = runner.invoke(cli, ["search", "test", "--rerank"])
+
+        assert result.exit_code == 0, result.output
+        assert "--rerank skipped: GEMINI_API_KEY is not set" in result.output
+        MockReranker.assert_called_once()
+        mock_rerank.assert_not_called()
+        mock_cache.assert_called_once_with(results, query="test")
+        mock_present.assert_called_once()
+        assert mock_present.call_args[0][0] == results
+        assert mock_present.call_args.kwargs["rerank_enabled"] is False
+
     def test_search_dedupe_runs_before_rerank(self, runner):
         deduped = [
             {"source_file": "/a.mp4", "start_time": 0.0, "end_time": 30.0,

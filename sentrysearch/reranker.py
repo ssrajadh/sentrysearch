@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import sys
 import tempfile
 from dataclasses import dataclass
 
@@ -78,16 +79,25 @@ def rerank_results(
     scored: list[tuple[dict, int, RerankScore | None]] = []
     with tempfile.TemporaryDirectory(prefix="sentrysearch_rerank_") as tmp_dir:
         for original_rank, result in enumerate(results):
-            clip_path = os.path.join(tmp_dir, f"candidate_{original_rank:03d}.mp4")
-            trim_clip(
-                result["source_file"],
-                result["start_time"],
-                result["end_time"],
-                clip_path,
-                padding=0.0,
-            )
-            score = reranker.score(query, clip_path, verbose=verbose)
             reranked = dict(result)
+            score = None
+            clip_path = os.path.join(tmp_dir, f"candidate_{original_rank:03d}.mp4")
+            try:
+                trim_clip(
+                    result["source_file"],
+                    result["start_time"],
+                    result["end_time"],
+                    clip_path,
+                    padding=0.0,
+                )
+                score = reranker.score(query, clip_path, verbose=verbose)
+            except Exception as exc:
+                if verbose:
+                    print(
+                        f"  [verbose] rerank candidate #{original_rank + 1} "
+                        f"fallback: {exc}",
+                        file=sys.stderr,
+                    )
             if score is not None:
                 reranked["rerank_match"] = score.rerank_match
                 reranked["rerank_confidence"] = score.rerank_confidence

@@ -166,7 +166,7 @@ sentrysearch search "pedestrian crossing behind the car" --rerank --results 10
 
 The `--dedupe` value is a cosine similarity ceiling (0–1). Any result whose similarity to an already-kept higher-ranked result exceeds this value is dropped. Lower values are stricter: `0.8` requires results to be very distinct, `0.95` only removes near-identical chunks. `0.9` is a good default.
 
-`--rerank` extracts each returned candidate clip, sends it to Gemini 2.5 Flash with the query, and sorts likely visual matches ahead of embedding-only results. If a Gemini response cannot be parsed, that candidate keeps its original embedding rank instead of failing the search.
+`--rerank` extracts each returned candidate clip, sends it to Gemini 2.5 Flash with the query, and sorts likely visual matches ahead of embedding-only results. If reranking cannot run or a candidate cannot be scored, SentrySearch keeps the embedding-ranked results instead of failing the search.
 
 ### Search by image
 

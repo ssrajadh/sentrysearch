@@ -730,17 +730,30 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
 
         results = search_footage(query, store, n_results=n_results, verbose=verbose,
                                  dedupe_threshold=dedupe_threshold)
+        rerank_enabled = rerank
         if rerank and results:
+            from .gemini_embedder import GeminiAPIKeyError
             from .gemini_reranker import GeminiReranker
             from .reranker import rerank_results
 
-            results = rerank_results(
-                query, results, GeminiReranker(), verbose=verbose,
-            )
+            try:
+                reranker = GeminiReranker()
+            except GeminiAPIKeyError:
+                click.secho(
+                    "--rerank skipped: GEMINI_API_KEY is not set; "
+                    "showing embedding results.",
+                    fg="yellow",
+                    err=True,
+                )
+                rerank_enabled = False
+            else:
+                results = rerank_results(
+                    query, results, reranker, verbose=verbose,
+                )
         _cache_last_search(results, query=query)
         _present_results(
             results, threshold, trim, save_top, output_dir, overlay, verbose,
-            rerank_enabled=rerank,
+            rerank_enabled=rerank_enabled,
         )
 
     except Exception as e:
