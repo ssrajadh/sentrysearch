@@ -98,6 +98,30 @@ def _strip_private_result_fields(results: list[dict]) -> list[dict]:
     ]
 
 
+def _get_search_reranker(
+    backend: str,
+    model: str | None,
+    quantize: bool | None,
+):
+    if backend == "local":
+        from .embedder import reset_embedder
+        from .qwen_reranker import QwenReranker
+
+        reset_embedder()
+        return QwenReranker(
+            model_name=model or "qwen8b",
+            quantize=quantize,
+        ).load()
+
+    from .gemini_reranker import GeminiReranker
+    return GeminiReranker()
+
+
+def _first_error_line(exc: Exception) -> str:
+    lines = str(exc).splitlines()
+    return lines[0] if lines else exc.__class__.__name__
+
+
 def _open_file(path: str) -> None:
     """Open a file with the system's default application."""
     try:
@@ -659,7 +683,7 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
               help="Drop results whose cosine similarity to a higher-ranked "
                    "result exceeds this (e.g. 0.9).")
 @click.option("--rerank", is_flag=True,
-              help="Use Gemini Flash to rerank candidates before trimming.")
+              help="Use a VLM to rerank candidates before trimming.")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
 def search(query, n_results, output_dir, trim, save_top, threshold, overlay, backend, model, dashscope_model, quantize, dedupe_threshold, rerank, verbose):
     """Search indexed footage with a natural language QUERY."""
@@ -740,14 +764,14 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
         rerank_enabled = rerank
         if rerank and results:
             from .gemini_embedder import GeminiAPIKeyError
-            from .gemini_reranker import GeminiReranker
+            from .local_embedder import LocalModelError
             from .reranker import rerank_results
 
             try:
-                reranker = GeminiReranker()
-            except GeminiAPIKeyError:
+                reranker = _get_search_reranker(backend, model, quantize)
+            except (GeminiAPIKeyError, LocalModelError) as exc:
                 click.secho(
-                    "--rerank skipped: GEMINI_API_KEY is not set; "
+                    f"--rerank skipped: {_first_error_line(exc)}; "
                     "showing embedding results.",
                     fg="yellow",
                     err=True,

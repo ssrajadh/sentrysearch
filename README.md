@@ -154,19 +154,19 @@ No confident match found (best score: 0.28). Show results anyway? [y/N]:
 
 With `--no-trim`, low-confidence results are shown with a note instead of a prompt.
 
-Options: `--results N`, `--output-dir DIR`, `--no-trim` to skip auto-trimming, `--threshold 0.5` to adjust the confidence cutoff, `--save-top N` to save the top N clips instead of just the best match, `--dedupe` to drop results too similar to a higher-ranked pick (prevents near-duplicate chunks of the same event from filling the list), and `--rerank` to ask Gemini Flash to re-rank the returned candidates before trimming. Backend and model are auto-detected from the index — pass `--backend` or `--model` only to override.
+Options: `--results N`, `--output-dir DIR`, `--no-trim` to skip auto-trimming, `--threshold 0.5` to adjust the confidence cutoff, `--save-top N` to save the top N clips instead of just the best match, `--dedupe` to drop results too similar to a higher-ranked pick (prevents near-duplicate chunks of the same event from filling the list), and `--rerank` to ask a VLM to re-rank the returned candidates before trimming. Backend and model are auto-detected from the index — pass `--backend` or `--model` only to override.
 
 ```bash
 # Save top 5 clips, dropping near-duplicates
 sentrysearch search "red truck" --save-top 5 --dedupe 0.9
 
-# Re-rank the top 10 embedding matches with Gemini Flash before trimming
+# Re-rank the top 10 embedding matches with a VLM before trimming
 sentrysearch search "pedestrian crossing behind the car" --rerank --results 10
 ```
 
 The `--dedupe` value is a cosine similarity ceiling (0–1). Any result whose similarity to an already-kept higher-ranked result exceeds this value is dropped. Lower values are stricter: `0.8` requires results to be very distinct, `0.95` only removes near-identical chunks. `0.9` is a good default.
 
-`--rerank` extracts each returned candidate clip, sends it to Gemini 2.5 Flash with the query, and sorts likely visual matches ahead of embedding-only results. If reranking cannot run or a candidate cannot be scored, SentrySearch keeps the embedding-ranked results instead of failing the search.
+`--rerank` extracts each returned candidate clip, sends it to a VLM with the query, and sorts likely visual matches ahead of embedding-only results. Gemini and qwen-cloud searches use Gemini 2.5 Flash for reranking; local searches use a local Qwen3-VL Instruct reranker. If reranking cannot run or a candidate cannot be scored, SentrySearch keeps the embedding-ranked results instead of failing the search.
 
 ### Search by image
 
@@ -279,6 +279,7 @@ Options:
 
 Notes:
 - First run downloads the model (~16 GB for 8B, ~4 GB for 2B).
+- Local `--rerank` downloads a separate Qwen3-VL Instruct model (`Qwen/Qwen3-VL-8B-Instruct` or `Qwen/Qwen3-VL-2B-Instruct`) in addition to the embedding model.
 - Embeddings from different backends and models are **not compatible**. Each backend/model combination gets its own isolated index, so they can't accidentally mix. If you search with a model that has no indexed data, you'll be told which model was actually used.
 - Speed varies by GPU core count — base M-series chips are slower than Pro/Max but produce identical results.
 

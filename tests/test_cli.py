@@ -835,7 +835,7 @@ class TestSearchRerank:
         ]
         with patch("sentrysearch.store.SentryStore") as MockStore, \
              patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()), \
-             patch("sentrysearch.store.detect_index", return_value=("local", "qwen2b")), \
+             patch("sentrysearch.store.detect_index", return_value=("gemini", None)), \
              patch("sentrysearch.search.search_footage", return_value=results), \
              patch("sentrysearch.gemini_reranker.GeminiReranker",
                    side_effect=GeminiAPIKeyError("GEMINI_API_KEY is not set.")) as MockReranker, \
@@ -851,6 +851,85 @@ class TestSearchRerank:
         assert result.exit_code == 0, result.output
         assert "--rerank skipped: GEMINI_API_KEY is not set" in result.output
         MockReranker.assert_called_once()
+        mock_rerank.assert_not_called()
+        mock_cache.assert_called_once_with(results, query="test")
+        mock_present.assert_called_once()
+        assert mock_present.call_args[0][0] == results
+        assert mock_present.call_args.kwargs["rerank_enabled"] is False
+
+    def test_search_local_rerank_uses_qwen_and_resets_before_load(
+        self, runner,
+    ):
+        results = [
+            {"source_file": "/a.mp4", "start_time": 0.0, "end_time": 30.0,
+             "similarity_score": 0.7},
+        ]
+        events = []
+
+        def fake_reset():
+            events.append("reset")
+
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()), \
+             patch("sentrysearch.embedder.reset_embedder",
+                   side_effect=fake_reset), \
+             patch("sentrysearch.store.detect_index",
+                   return_value=("local", "qwen2b")), \
+             patch("sentrysearch.search.search_footage", return_value=results), \
+             patch("sentrysearch.qwen_reranker.QwenReranker") as MockQwen, \
+             patch("sentrysearch.reranker.rerank_results",
+                   return_value=results) as mock_rerank, \
+             patch("sentrysearch.cli._cache_last_search"), \
+             patch("sentrysearch.cli._present_results"):
+            inst = MagicMock()
+            inst.get_stats.return_value = {"total_chunks": 5}
+            MockStore.return_value = inst
+            qwen = MockQwen.return_value
+
+            def fake_load():
+                events.append("load")
+                return qwen
+
+            qwen.load.side_effect = fake_load
+
+            result = runner.invoke(cli, ["search", "test", "--rerank"])
+
+        assert result.exit_code == 0, result.output
+        MockQwen.assert_called_once_with(model_name="qwen2b", quantize=None)
+        assert events[:2] == ["reset", "load"]
+        mock_rerank.assert_called_once_with(
+            "test", results, qwen,
+            candidate_dir=ANY,
+            verbose=False,
+        )
+
+    def test_search_local_rerank_load_error_falls_back_to_embedding_results(
+        self, runner,
+    ):
+        from sentrysearch.local_embedder import LocalModelError
+
+        results = [
+            {"source_file": "/a.mp4", "start_time": 0.0, "end_time": 30.0,
+             "similarity_score": 0.7},
+        ]
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()), \
+             patch("sentrysearch.store.detect_index",
+                   return_value=("local", "qwen2b")), \
+             patch("sentrysearch.search.search_footage", return_value=results), \
+             patch("sentrysearch.qwen_reranker.QwenReranker",
+                   side_effect=LocalModelError("missing local deps")), \
+             patch("sentrysearch.reranker.rerank_results") as mock_rerank, \
+             patch("sentrysearch.cli._cache_last_search") as mock_cache, \
+             patch("sentrysearch.cli._present_results") as mock_present:
+            inst = MagicMock()
+            inst.get_stats.return_value = {"total_chunks": 5}
+            MockStore.return_value = inst
+
+            result = runner.invoke(cli, ["search", "test", "--rerank"])
+
+        assert result.exit_code == 0, result.output
+        assert "--rerank skipped: missing local deps" in result.output
         mock_rerank.assert_not_called()
         mock_cache.assert_called_once_with(results, query="test")
         mock_present.assert_called_once()

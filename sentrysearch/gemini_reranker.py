@@ -14,36 +14,16 @@ from .gemini_embedder import (
     _RateLimiter,
     _retry,
 )
-from .reranker import RerankScore, parse_rerank_response
+from .reranker import (
+    RERANK_SCHEMA,
+    RerankScore,
+    build_rerank_prompt,
+    parse_rerank_response,
+)
 
 load_dotenv()
 
 RERANK_MODEL = "gemini-2.5-flash"
-
-_RERANK_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "rerank_match": {"type": "boolean"},
-        "rerank_confidence": {
-            "type": "number",
-            "minimum": 0.0,
-            "maximum": 1.0,
-        },
-    },
-    "required": ["rerank_match", "rerank_confidence"],
-}
-
-
-def _prompt(query: str) -> str:
-    return (
-        "You are reranking video search candidates.\n"
-        "Look at the clip and decide whether it visually matches this search "
-        f"query: {query!r}\n\n"
-        "Return JSON only with this exact shape:\n"
-        '{"rerank_match": true, "rerank_confidence": 0.0}\n'
-        "Use rerank_match=true only when the clip contains the requested event. "
-        "Use rerank_confidence as your confidence from 0.0 to 1.0."
-    )
 
 
 class GeminiReranker:
@@ -74,10 +54,10 @@ class GeminiReranker:
         from google.genai import types
 
         video_part = GeminiEmbedder._make_video_part(clip_path, types)
-        prompt_part = types.Part(text=_prompt(query))
+        prompt_part = types.Part(text=build_rerank_prompt(query))
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
-            response_json_schema=_RERANK_SCHEMA,
+            response_json_schema=RERANK_SCHEMA,
             temperature=0.0,
         )
 

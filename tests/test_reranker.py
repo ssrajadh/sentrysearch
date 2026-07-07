@@ -1,7 +1,9 @@
 """Tests for VLM reranking helpers."""
 
 from sentrysearch.reranker import (
+    RERANK_SCHEMA,
     RerankScore,
+    build_rerank_prompt,
     parse_rerank_response,
     rerank_results,
 )
@@ -17,14 +19,33 @@ def _result(name: str, score: float = 0.8) -> dict:
 
 
 class TestParseRerankResponse:
+    def test_prompt_is_video_generic(self):
+        prompt = build_rerank_prompt("red truck")
+        assert "video search candidates" in prompt
+        assert "red truck" in prompt
+
+    def test_schema_requires_score_fields(self):
+        assert RERANK_SCHEMA["required"] == [
+            "rerank_match", "rerank_confidence",
+        ]
+
     def test_accepts_valid_json(self):
         score = parse_rerank_response(
             '{"rerank_match": true, "rerank_confidence": 0.75}',
         )
         assert score == RerankScore(True, 0.75)
 
+    def test_accepts_json_code_fence(self):
+        score = parse_rerank_response(
+            '```json\n{"rerank_match": true, "rerank_confidence": 0.75}\n```',
+        )
+        assert score == RerankScore(True, 0.75)
+
     def test_rejects_malformed_json(self):
         assert parse_rerank_response("{not json") is None
+
+    def test_rejects_missing_text(self):
+        assert parse_rerank_response(None) is None
 
     def test_rejects_non_object_json(self):
         assert parse_rerank_response("[true, 0.8]") is None

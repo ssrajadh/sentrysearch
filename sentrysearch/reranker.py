@@ -19,14 +19,55 @@ class RerankScore:
     rerank_confidence: float
 
 
+RERANK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "rerank_match": {"type": "boolean"},
+        "rerank_confidence": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0,
+        },
+    },
+    "required": ["rerank_match", "rerank_confidence"],
+}
+
+
+def build_rerank_prompt(query: str) -> str:
+    return (
+        "You are reranking video search candidates.\n"
+        "Look at the clip and decide whether it visually matches this search "
+        f"query: {query!r}\n\n"
+        "Return JSON only with this exact shape:\n"
+        '{"rerank_match": true, "rerank_confidence": 0.0}\n'
+        "Use rerank_match=true only when the clip contains the requested event. "
+        "Use rerank_confidence as your confidence from 0.0 to 1.0."
+    )
+
+
+def _strip_json_code_fence(text):
+    if not isinstance(text, str):
+        return text
+    text = text.strip()
+    if not text.startswith("```"):
+        return text
+
+    lines = text.splitlines()
+    if len(lines) < 3 or lines[-1].strip() != "```":
+        return text
+    if lines[0].strip() not in ("```", "```json", "```JSON"):
+        return text
+    return "\n".join(lines[1:-1]).strip()
+
+
 def parse_rerank_response(text: str) -> RerankScore | None:
-    """Parse and validate the Gemini rerank JSON response.
+    """Parse and validate a VLM rerank JSON response.
 
     Invalid model output returns ``None`` so callers can fall back to the
     candidate's embedding rank.
     """
     try:
-        data = json.loads(text)
+        data = json.loads(_strip_json_code_fence(text))
     except (json.JSONDecodeError, TypeError):
         return None
 

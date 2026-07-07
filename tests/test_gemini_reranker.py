@@ -6,15 +6,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from sentrysearch.gemini_embedder import GeminiAPIKeyError
-from sentrysearch.gemini_reranker import GeminiReranker, RERANK_MODEL, _prompt
-from sentrysearch.reranker import RerankScore
+from sentrysearch.gemini_reranker import GeminiReranker, RERANK_MODEL
+from sentrysearch.reranker import RERANK_SCHEMA, RerankScore
 
 
 class TestGeminiReranker:
-    def test_prompt_is_video_generic(self):
-        prompt = _prompt("red truck")
-        assert "video search candidates" in prompt
-
     def test_raises_without_api_key(self):
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("GEMINI_API_KEY", None)
@@ -28,10 +24,13 @@ class TestGeminiReranker:
             mock_client_cls.assert_called_once_with(api_key="test-key-123")
 
     @patch("sentrysearch.gemini_reranker._retry", side_effect=lambda fn: fn())
+    @patch("sentrysearch.gemini_reranker.build_rerank_prompt",
+           return_value="shared prompt")
     @patch("sentrysearch.gemini_reranker._RateLimiter")
     @patch("google.genai.Client")
     def test_score_uses_flash_json_retry_and_limiter(
-        self, mock_client_cls, mock_limiter_cls, mock_retry, tmp_path,
+        self, mock_client_cls, mock_limiter_cls, mock_prompt, mock_retry,
+        tmp_path,
     ):
         clip = tmp_path / "candidate.mp4"
         clip.write_bytes(b"fake-video")
@@ -46,6 +45,7 @@ class TestGeminiReranker:
             score = reranker.score("red truck", str(clip))
 
         assert score == RerankScore(True, 0.91)
+        mock_prompt.assert_called_once_with("red truck")
         mock_limiter_cls.return_value.wait.assert_called_once()
         mock_retry.assert_called_once()
 
@@ -54,9 +54,7 @@ class TestGeminiReranker:
         assert call.kwargs["model"] == "gemini-2.5-flash"
         config = call.kwargs["config"]
         assert config.response_mime_type == "application/json"
-        assert config.response_json_schema["required"] == [
-            "rerank_match", "rerank_confidence",
-        ]
+        assert config.response_json_schema == RERANK_SCHEMA
 
     @patch("sentrysearch.gemini_reranker._retry", side_effect=lambda fn: fn())
     @patch("sentrysearch.gemini_reranker._RateLimiter")
