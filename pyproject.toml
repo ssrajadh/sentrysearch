@@ -17,7 +17,9 @@ tesla = ["geopy"]
 local = [
     "torch>=2.0",
     "torchvision>=0.15,<0.22",
-    "transformers>=5.3",
+    # 5.3.0 drops the per-frame video_grid_thw expansion in get_rope_index,
+    # so multi-frame chunks raise StopIteration.  Fixed in 5.4.0.
+    "transformers>=5.4",
     "accelerate",
     "qwen-vl-utils",
     "torchcodec>=0.6",
@@ -25,7 +27,8 @@ local = [
 local-quantized = [
     "torch>=2.0",
     "torchvision>=0.15,<0.22",
-    "transformers>=5.3",
+    # See the note in the `local` extra above.
+    "transformers>=5.4",
     "accelerate",
     "qwen-vl-utils",
     "torchcodec>=0.6",
