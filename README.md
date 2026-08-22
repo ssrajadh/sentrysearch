@@ -465,7 +465,6 @@ The local backend may print warnings during indexing and search. These are cosme
 
 - **Still-frame detection is heuristic** — it uses JPEG file size comparison across sampled frames. It may occasionally skip chunks with subtle motion or embed chunks that are truly static. Disable with `--no-skip-still` if you need every chunk indexed.
 - **Search quality depends on chunk boundaries** — if an event spans two chunks, the overlapping window helps but isn't perfect. Smarter chunking (e.g. scene detection) could improve this.
-- **Gemini Embedding 2 is in preview** — API behavior and pricing may change.
 
 ## Compatibility
 
