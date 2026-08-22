@@ -422,9 +422,13 @@ def init():
 @click.option("--retry-failed", is_flag=True,
               help="Retry chunks that previously failed and were routed to the DLQ.")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
+@click.option("--rpm", default=None, type=click.IntRange(min=1),
+              help="Max requests/minute to the cloud API (gemini, qwen-cloud). "
+                   "Lower this if you hit rate limits on a free-tier key. "
+                   "Overrides GEMINI_RPM / DASHSCOPE_RPM. Ignored by --backend local.")
 def index(directory, chunk_duration, overlap, preprocess, target_resolution,
           target_fps, skip_still, backend, model, dashscope_model, quantize,
-          retry_failed, verbose):
+          retry_failed, verbose, rpm):
     """Index supported video files in DIRECTORY for searching."""
     from .chunker import (
         SUPPORTED_VIDEO_EXTENSIONS,
@@ -467,7 +471,7 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
         else:
             model = None
 
-        embedder = get_embedder(backend, model=model, quantize=quantize)
+        embedder = get_embedder(backend, model=model, quantize=quantize, rpm=rpm)
 
         if os.path.isfile(directory):
             videos = [os.path.abspath(directory)]
@@ -685,7 +689,11 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
 @click.option("--rerank", is_flag=True,
               help="Use a VLM to rerank candidates before trimming.")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
-def search(query, n_results, output_dir, trim, save_top, threshold, overlay, backend, model, dashscope_model, quantize, dedupe_threshold, rerank, verbose):
+@click.option("--rpm", default=None, type=click.IntRange(min=1),
+              help="Max requests/minute to the cloud API (gemini, qwen-cloud). "
+                   "Lower this if you hit rate limits on a free-tier key. "
+                   "Overrides GEMINI_RPM / DASHSCOPE_RPM. Ignored by --backend local.")
+def search(query, n_results, output_dir, trim, save_top, threshold, overlay, backend, model, dashscope_model, quantize, dedupe_threshold, rerank, verbose, rpm):
     """Search indexed footage with a natural language QUERY."""
     from .embedder import get_embedder, reset_embedder
     from .local_embedder import normalize_model_key
@@ -750,7 +758,7 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
                 fg="yellow", err=True,
             )
 
-        get_embedder(backend, model=model, quantize=quantize)
+        get_embedder(backend, model=model, quantize=quantize, rpm=rpm)
 
         # Ensure we fetch enough results for --save-top
         if save_top is not None and save_top > n_results:
@@ -918,8 +926,12 @@ def _present_results(
               help="Drop results whose cosine similarity to a higher-ranked "
                    "result exceeds this (e.g. 0.9).")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
+@click.option("--rpm", default=None, type=click.IntRange(min=1),
+              help="Max requests/minute to the cloud API (gemini, qwen-cloud). "
+                   "Lower this if you hit rate limits on a free-tier key. "
+                   "Overrides GEMINI_RPM / DASHSCOPE_RPM. Ignored by --backend local.")
 def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
-        backend, model, dashscope_model, quantize, dedupe_threshold, verbose):
+        backend, model, dashscope_model, quantize, dedupe_threshold, verbose, rpm):
     """Search indexed footage using an IMAGE as the query."""
     from .embedder import get_embedder, reset_embedder
     from .local_embedder import normalize_model_key
@@ -959,7 +971,7 @@ def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
             )
             return
 
-        get_embedder(backend, model=model, quantize=quantize)
+        get_embedder(backend, model=model, quantize=quantize, rpm=rpm)
 
         if save_top is not None and save_top > n_results:
             n_results = save_top
@@ -1019,9 +1031,13 @@ def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
 @click.option("--quantize/--no-quantize", default=None,
               help="Enable/disable 4-bit quantization for local backend.")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
+@click.option("--rpm", default=None, type=click.IntRange(min=1),
+              help="Max requests/minute to the cloud API (gemini, qwen-cloud). "
+                   "Lower this if you hit rate limits on a free-tier key. "
+                   "Overrides GEMINI_RPM / DASHSCOPE_RPM. Ignored by --backend local.")
 def highlights(count, method, neighbors, against, against_mode, dedupe_threshold,
                exclude_baseline, trim, output_dir, overlay, backend, model,
-               quantize, verbose):
+               quantize, verbose, rpm):
     """Surface the most anomalous clips in the indexed footage.
 
     Useful when you don't know what to search for — finds chunks whose
@@ -1059,7 +1075,7 @@ def highlights(count, method, neighbors, against, against_mode, dedupe_threshold
 
         against_embedding = None
         if against is not None:
-            get_embedder(backend, model=model, quantize=quantize)
+            get_embedder(backend, model=model, quantize=quantize, rpm=rpm)
             against_embedding = np.asarray(
                 embed_query(against, verbose=verbose), dtype=np.float32,
             )
@@ -1155,7 +1171,11 @@ def _print_shell_results(results, threshold):
 @click.option("--threshold", default=0.41, show_default=True, type=float,
               help="Minimum similarity score to consider a confident match.")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
-def shell(backend, model, dashscope_model, quantize, n_results, threshold, verbose):
+@click.option("--rpm", default=None, type=click.IntRange(min=1),
+              help="Max requests/minute to the cloud API (gemini, qwen-cloud). "
+                   "Lower this if you hit rate limits on a free-tier key. "
+                   "Overrides GEMINI_RPM / DASHSCOPE_RPM. Ignored by --backend local.")
+def shell(backend, model, dashscope_model, quantize, n_results, threshold, verbose, rpm):
     """Start an interactive search session that keeps the model loaded.
 
     Useful for running multiple queries back-to-back with the local
@@ -1203,7 +1223,7 @@ def shell(backend, model, dashscope_model, quantize, n_results, threshold, verbo
 
         label = backend + (f" ({model})" if model else "")
         click.echo(f"Loading {label}...")
-        get_embedder(backend, model=model, quantize=quantize)
+        get_embedder(backend, model=model, quantize=quantize, rpm=rpm)
 
         # Readline for arrow-key history and persistent history file
         try:

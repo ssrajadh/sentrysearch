@@ -133,6 +133,7 @@ Indexed 12 new chunks from 3 files. Total: 12 chunks from 3 files.
 - `--target-resolution 480` — 预处理目标高度（像素）
 - `--target-fps 5` — 预处理目标帧率
 - `--no-skip-still` — 即使画面几乎无变化也全部嵌入
+- `--rpm 10` — 限制每分钟对云端 API 的请求数（见下文）
 - `--backend local` — 使用本地模型而非 Gemini（见下文）
 
 ### 搜索
@@ -387,6 +388,27 @@ DashScope 对**多模态向量**按 **人民币 / 千输入 Token**、按**模�
 建索引时每个切片走 **视频** 模态；`search` / `img` 查询主要是**文本**或**图片** Token，单价通常低于视频。总费用取决于每次请求在账单里统计的 **Token 数**（与分辨率、时长、采样如环境变量 `DASHSCOPE_VIDEO_FPS` 等有关），**不能像 Gemini 那样仅凭「每秒一帧」的公开美元单价直接换算成固定「每小时多少钱」**，建议先小规模索引后在百炼/ DashScope 控制台看实际消耗再外推。
 
 文档中常见**新开通限时免费 Token 额度**（例如百万级 Token、限期有效），以 [多模态向量计费说明](https://help.aliyun.com/dashscope/developer-reference/one-peace-multimodal-embedding-metering-and-billing) 与控制台为准，**定价与活动会调整**。
+
+### 限速（免费额度 Key）
+
+免费额度的 API Key 每分钟请求数上限较低，索引大目录时可能中途触发限流。可用 `--rpm` 控制外发请求速率：
+
+```bash
+sentrysearch index /path/to/footage --rpm 10
+```
+
+也可以设置一次，对所有命令生效：
+
+```bash
+export GEMINI_RPM=10        # gemini 后端
+export DASHSCOPE_RPM=10     # qwen-cloud 后端
+```
+
+`--rpm` 的优先级高于环境变量，可用于 `index`、`search`、`img`、`highlights`、`shell`。`--backend local` 不发起 API 调用，因此该选项会被忽略。嵌入与重排共用同一个限速窗口，因为二者消耗同一项目配额。
+
+**`--rpm` 只能解决「每分钟」限制。** 免费额度同时还有**每日**请求上限，限速无法绕过它——只是把同样数量的请求摊到更长时间里。若触发每日配额，索引会中止，直到太平洋时间零点重置。索引是增量的，第二天重新运行会从中断处继续，而不是从头再来。请在 [AI Studio](https://aistudio.google.com) 查看项目的实际限额。
+
+作为参考：在默认的 30 秒切片、5 秒重叠下，1 分钟片段会产生 3 次请求——即 4 路摄像头、每路 1 小时素材约需 720 次请求。若素材量较大，[本地后端](#本地后端-无需-api-key)完全没有配额限制。
 
 ### 索引进阶选项 两种后端
 

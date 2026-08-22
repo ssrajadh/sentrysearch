@@ -147,6 +147,7 @@ class QwenCloudEmbedder(BaseEmbedder):
         *,
         dimensions: int = DIMENSIONS,
         video_fps: float | None = None,
+        rpm: int | None = None,
     ):
         try:
             from dashscope import MultiModalEmbedding
@@ -174,7 +175,8 @@ class QwenCloudEmbedder(BaseEmbedder):
         self._video_fps = (
             video_fps if video_fps is not None else DEFAULT_VIDEO_FPS
         )
-        self._limiter = _RateLimiter(max_per_minute=DEFAULT_RPM)
+        # Explicit --rpm wins over the DASHSCOPE_RPM-derived default.
+        self._limiter = _RateLimiter(max_per_minute=rpm or DEFAULT_RPM)
 
     def embed_video_chunk(self, chunk_path: str, verbose: bool = False) -> list[float]:
         if not os.path.isfile(chunk_path):

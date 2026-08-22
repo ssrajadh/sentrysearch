@@ -617,7 +617,7 @@ class TestIndexLocalFlags:
             ])
             assert result.exit_code == 0
             # Should have inferred backend="local" from --model
-            mock_get.assert_called_once_with("local", model="qwen2b", quantize=None)
+            mock_get.assert_called_once_with("local", model="qwen2b", quantize=None, rpm=None)
 
     def test_index_passes_backend_and_model_to_store(self, runner, tmp_path):
         d = tmp_path / "vids"
@@ -672,7 +672,7 @@ class TestSearchLocalFlags:
                 "search", "test query", "--backend", "local", "--model", "qwen2b",
             ])
             assert result.exit_code == 0
-            mock_get.assert_called_with("local", model="qwen2b", quantize=None)
+            mock_get.assert_called_with("local", model="qwen2b", quantize=None, rpm=None)
 
     def test_search_passes_quantize_to_embedder(self, runner):
         with patch("sentrysearch.store.SentryStore") as MockStore, \
@@ -686,7 +686,7 @@ class TestSearchLocalFlags:
                 "search", "test query", "--backend", "local", "--quantize",
             ])
             assert result.exit_code == 0
-            mock_get.assert_called_with("local", model="qwen8b", quantize=True)
+            mock_get.assert_called_with("local", model="qwen8b", quantize=True, rpm=None)
 
     def test_search_model_implies_local_backend(self, runner):
         with patch("sentrysearch.store.SentryStore") as MockStore, \
@@ -700,7 +700,7 @@ class TestSearchLocalFlags:
             ])
             assert result.exit_code == 0
             # --model qwen2b should imply --backend local
-            mock_get.assert_called_with("local", model="qwen2b", quantize=None)
+            mock_get.assert_called_with("local", model="qwen2b", quantize=None, rpm=None)
 
     def test_search_auto_detects_backend_and_model(self, runner):
         with patch("sentrysearch.store.SentryStore") as MockStore, \
@@ -713,7 +713,7 @@ class TestSearchLocalFlags:
             # No --backend or --model flags
             result = runner.invoke(cli, ["search", "test query"])
             assert result.exit_code == 0
-            mock_get.assert_called_with("local", model="qwen2b", quantize=None)
+            mock_get.assert_called_with("local", model="qwen2b", quantize=None, rpm=None)
             MockStore.assert_called_once_with(backend="local", model="qwen2b")
 
     def test_search_wrong_model_shows_suggestion(self, runner):
@@ -1247,7 +1247,7 @@ class TestImgCommand:
                 "--no-trim",
             ])
         assert result.exit_code == 0, result.output
-        mock_get.assert_called_with("local", model="qwen2b", quantize=None)
+        mock_get.assert_called_with("local", model="qwen2b", quantize=None, rpm=None)
 
     def test_img_missing_file_errors(self, runner):
         result = runner.invoke(cli, ["img", "/nonexistent/x.jpg"])
@@ -1359,3 +1359,39 @@ class TestRemoveCommand:
             result = runner.invoke(cli, ["remove", "anything"])
             assert result.exit_code == 0
             assert "empty" in result.output.lower()
+
+
+class TestRpmFlag:
+    """--rpm reaches the embedder factory (issue #85)."""
+
+    def test_index_forwards_rpm(self, runner, tmp_path):
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()) as mock_get:
+            MockStore.return_value = MagicMock()
+            result = runner.invoke(cli, ["index", str(empty_dir), "--rpm", "10"])
+            assert result.exit_code == 0
+            assert mock_get.call_args[1]["rpm"] == 10
+
+    def test_index_rejects_zero_rpm(self, runner, tmp_path):
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        result = runner.invoke(cli, ["index", str(empty_dir), "--rpm", "0"])
+        assert result.exit_code != 0
+
+    def test_rpm_defaults_to_none_when_absent(self, runner, tmp_path):
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()) as mock_get:
+            MockStore.return_value = MagicMock()
+            result = runner.invoke(cli, ["index", str(empty_dir)])
+            assert result.exit_code == 0
+            assert mock_get.call_args[1]["rpm"] is None
+
+    @pytest.mark.parametrize("command", ["index", "search", "img", "highlights", "shell"])
+    def test_rpm_exposed_on_cloud_commands(self, runner, command):
+        result = runner.invoke(cli, [command, "--help"])
+        assert result.exit_code == 0
+        assert "--rpm" in result.output

@@ -5,6 +5,7 @@ Embeds video chunks inline via Part.from_bytes — no Files API needed.
 
 import os
 import sys
+import threading
 import time
 from collections import deque
 
@@ -28,16 +29,78 @@ class _RateLimiter:
     def __init__(self, max_per_minute: int = DEFAULT_RPM):
         self._max = max_per_minute
         self._timestamps: deque[float] = deque()
+        self._lock = threading.Lock()
+
+    @property
+    def max_per_minute(self) -> int:
+        return self._max
+
+    def set_rate(self, max_per_minute: int) -> None:
+        """Change the ceiling in place, keeping the current window."""
+        if max_per_minute < 1:
+            raise ValueError("rpm must be >= 1")
+        with self._lock:
+            self._max = max_per_minute
 
     def wait(self) -> None:
-        now = time.monotonic()
-        while self._timestamps and now - self._timestamps[0] >= 60:
-            self._timestamps.popleft()
-        if len(self._timestamps) >= self._max:
-            sleep_for = 60.0 - (now - self._timestamps[0])
-            if sleep_for > 0:
-                time.sleep(sleep_for)
-        self._timestamps.append(time.monotonic())
+        with self._lock:
+            now = time.monotonic()
+            while self._timestamps and now - self._timestamps[0] >= 60:
+                self._timestamps.popleft()
+            if len(self._timestamps) >= self._max:
+                sleep_for = 60.0 - (now - self._timestamps[0])
+                if sleep_for > 0:
+                    time.sleep(sleep_for)
+            self._timestamps.append(time.monotonic())
+
+
+def _env_rpm() -> int | None:
+    """Read GEMINI_RPM, ignoring unset, malformed, or non-positive values."""
+    raw = os.environ.get("GEMINI_RPM", "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        print(
+            f"  Ignoring non-integer GEMINI_RPM={raw!r}; using {DEFAULT_RPM}.",
+            file=sys.stderr,
+        )
+        return None
+    if value < 1:
+        print(
+            f"  Ignoring non-positive GEMINI_RPM={value}; using {DEFAULT_RPM}.",
+            file=sys.stderr,
+        )
+        return None
+    return value
+
+
+_shared_limiter: _RateLimiter | None = None
+
+
+def get_limiter(rpm: int | None = None) -> _RateLimiter:
+    """Return the process-wide Gemini limiter, creating it on first use.
+
+    Embedding and reranking bill against the same per-project quota, so they
+    share one window instead of each running an independent budget.
+
+    Precedence: explicit *rpm* > ``GEMINI_RPM`` > :data:`DEFAULT_RPM`.
+    """
+    global _shared_limiter
+    if _shared_limiter is None:
+        _shared_limiter = _RateLimiter(
+            max_per_minute=rpm if rpm is not None else (_env_rpm() or DEFAULT_RPM)
+        )
+    elif rpm is not None:
+        _shared_limiter.set_rate(rpm)
+    return _shared_limiter
+
+
+def reset_limiter() -> None:
+    """Drop the shared limiter (tests, and backend switches)."""
+    global _shared_limiter
+    _shared_limiter = None
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +119,34 @@ class GeminiQuotaError(RuntimeError):
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _quota_message(msg: str) -> str:
+    """Build quota-error guidance, distinguishing per-day from per-minute.
+
+    A per-minute ceiling is something --rpm can pace under; a daily cap is not,
+    so the two failures need different advice.
+    """
+    per_day = "perday" in msg.replace("_", "").replace(" ", "") or "per day" in msg
+    if per_day:
+        return (
+            "Gemini API daily quota exhausted.\n\n"
+            "This is a per-day cap, so throttling with --rpm will not help.\n"
+            "The quota resets at midnight Pacific. Options:\n"
+            "  - Resume tomorrow (indexing is incremental; finished chunks are kept)\n"
+            "  - Index a smaller directory at a time\n"
+            "  - Use the local backend: --backend local\n"
+            "  - Upgrade your API plan at https://aistudio.google.com"
+        )
+    return (
+        "Gemini API rate limit exceeded (requests per minute).\n\n"
+        "Free-tier limits vary by model and project; check yours in AI Studio.\n"
+        "Options:\n"
+        f"  - Re-run with a lower rate, e.g. --rpm 10 (current: {get_limiter().max_per_minute})\n"
+        "  - Or set it once: export GEMINI_RPM=10\n"
+        "  - Use the local backend: --backend local\n"
+        "  - Upgrade your API plan at https://aistudio.google.com"
+    )
+
+
 def _retry(fn, *, max_retries: int = 5, initial_delay: float = 2.0, max_delay: float = 60.0):
     """Call *fn* with exponential back-off on transient errors (429, 503)."""
     delay = initial_delay
@@ -70,13 +161,7 @@ def _retry(fn, *, max_retries: int = 5, initial_delay: float = 2.0, max_delay: f
                 retryable = "resource exhausted" in msg or "503" in msg or "429" in msg
             if not retryable or attempt == max_retries:
                 if "resource exhausted" in msg or status == 429:
-                    raise GeminiQuotaError(
-                        "Gemini API rate limit exceeded.\n\n"
-                        "The free tier allows 60 requests/minute. Options:\n"
-                        "  - Wait a minute and retry\n"
-                        "  - Use a smaller --chunk-duration to create fewer chunks\n"
-                        "  - Upgrade your API plan at https://aistudio.google.com"
-                    ) from exc
+                    raise GeminiQuotaError(_quota_message(msg)) from exc
                 raise
             wait = min(delay, max_delay)
             print(
@@ -95,7 +180,7 @@ def _retry(fn, *, max_retries: int = 5, initial_delay: float = 2.0, max_delay: f
 class GeminiEmbedder(BaseEmbedder):
     """Gemini Embedding 2 backend (API-based)."""
 
-    def __init__(self):
+    def __init__(self, rpm: int | None = None):
         from google import genai
         from google.genai import types  # noqa: F811
 
@@ -110,7 +195,7 @@ class GeminiEmbedder(BaseEmbedder):
                 "  sentrysearch index <directory> --backend local"
             )
         self._client = genai.Client(api_key=api_key)
-        self._limiter = _RateLimiter()
+        self._limiter = get_limiter(rpm)
 
     def embed_video_chunk(self, chunk_path: str, verbose: bool = False) -> list[float]:
         from google.genai import types

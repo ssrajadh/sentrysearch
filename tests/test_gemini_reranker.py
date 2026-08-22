@@ -26,10 +26,10 @@ class TestGeminiReranker:
     @patch("sentrysearch.gemini_reranker._retry", side_effect=lambda fn: fn())
     @patch("sentrysearch.gemini_reranker.build_rerank_prompt",
            return_value="shared prompt")
-    @patch("sentrysearch.gemini_reranker._RateLimiter")
+    @patch("sentrysearch.gemini_reranker.get_limiter")
     @patch("google.genai.Client")
     def test_score_uses_flash_json_retry_and_limiter(
-        self, mock_client_cls, mock_limiter_cls, mock_prompt, mock_retry,
+        self, mock_client_cls, mock_get_limiter, mock_prompt, mock_retry,
         tmp_path,
     ):
         clip = tmp_path / "candidate.mp4"
@@ -46,7 +46,7 @@ class TestGeminiReranker:
 
         assert score == RerankScore(True, 0.91)
         mock_prompt.assert_called_once_with("red truck")
-        mock_limiter_cls.return_value.wait.assert_called_once()
+        mock_get_limiter.return_value.wait.assert_called_once()
         mock_retry.assert_called_once()
 
         call = mock_client.models.generate_content.call_args
@@ -57,7 +57,7 @@ class TestGeminiReranker:
         assert config.response_json_schema == RERANK_SCHEMA
 
     @patch("sentrysearch.gemini_reranker._retry", side_effect=lambda fn: fn())
-    @patch("sentrysearch.gemini_reranker._RateLimiter")
+    @patch("sentrysearch.gemini_reranker.get_limiter")
     @patch("google.genai.Client")
     def test_score_returns_none_for_unparseable_output(
         self, mock_client_cls, _mock_limiter_cls, _mock_retry, tmp_path,

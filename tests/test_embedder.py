@@ -7,11 +7,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from sentrysearch.gemini_embedder import (
+    DEFAULT_RPM,
     GeminiAPIKeyError,
     GeminiEmbedder,
     GeminiQuotaError,
+    _quota_message,
     _RateLimiter,
     _retry,
+    get_limiter,
+    reset_limiter,
 )
 from sentrysearch.embedder import (
     embed_image,
@@ -256,3 +260,76 @@ class TestEmbedderFactory:
                 model_name="qwen3-vl-embedding", dimensions=768,
             )
             assert result is MockQC.return_value
+
+
+# ---------------------------------------------------------------------------
+# Configurable / shared RPM (issue #85)
+# ---------------------------------------------------------------------------
+
+class TestConfigurableRpm:
+    def setup_method(self):
+        reset_limiter()
+
+    def teardown_method(self):
+        reset_limiter()
+
+    def test_defaults_to_module_default(self):
+        with patch.dict(os.environ, {}, clear=True):
+            assert get_limiter().max_per_minute == DEFAULT_RPM
+
+    def test_env_var_overrides_default(self):
+        with patch.dict(os.environ, {"GEMINI_RPM": "7"}):
+            assert get_limiter().max_per_minute == 7
+
+    def test_explicit_rpm_beats_env_var(self):
+        with patch.dict(os.environ, {"GEMINI_RPM": "7"}):
+            assert get_limiter(3).max_per_minute == 3
+
+    @pytest.mark.parametrize("bad", ["abc", "0", "-5", "", "  "])
+    def test_malformed_env_falls_back_to_default(self, bad):
+        with patch.dict(os.environ, {"GEMINI_RPM": bad}):
+            assert get_limiter().max_per_minute == DEFAULT_RPM
+
+    def test_limiter_is_shared_across_calls(self):
+        with patch.dict(os.environ, {}, clear=True):
+            assert get_limiter() is get_limiter()
+
+    def test_later_rpm_retunes_existing_limiter(self):
+        with patch.dict(os.environ, {}, clear=True):
+            first = get_limiter(10)
+            second = get_limiter(4)
+            assert first is second
+            assert second.max_per_minute == 4
+
+    def test_set_rate_rejects_non_positive(self):
+        limiter = _RateLimiter(max_per_minute=5)
+        with pytest.raises(ValueError):
+            limiter.set_rate(0)
+
+    def test_embedder_and_reranker_share_one_window(self):
+        """Both bill the same project quota, so they must not run separate budgets."""
+        from sentrysearch.gemini_reranker import GeminiReranker
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}, clear=True):
+            with patch("google.genai.Client", MagicMock()):
+                embedder = GeminiEmbedder(rpm=9)
+                reranker = GeminiReranker()
+        assert embedder._limiter is reranker._limiter
+        assert reranker._limiter.max_per_minute == 9
+
+
+class TestQuotaMessage:
+    def test_per_minute_message_points_at_rpm_flag(self):
+        msg = _quota_message("429 resource exhausted: quota exceeded")
+        assert "--rpm" in msg
+        assert "daily" not in msg.lower()
+
+    @pytest.mark.parametrize("raw", [
+        "generate_requests_per_model_per_day quota exceeded",
+        "quota exceeded: requests per day",
+        "GenerateRequestsPerDayPerProject limit",
+    ])
+    def test_per_day_message_says_throttling_will_not_help(self, raw):
+        msg = _quota_message(raw.lower())
+        assert "--rpm will not help" in msg
+        assert "midnight Pacific" in msg

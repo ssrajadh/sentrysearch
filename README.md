@@ -133,6 +133,7 @@ Options:
 - `--target-resolution 480` — target height in pixels for preprocessing
 - `--target-fps 5` — target frame rate for preprocessing
 - `--no-skip-still` — embed all chunks, even ones with no visual change
+- `--rpm 10` — cap requests per minute to the cloud API ([details below](#rate-limiting-free-tier-keys))
 - `--backend local` — use a local model instead of Gemini ([details below](#local-backend-no-api-key-needed))
 
 ### Search
@@ -443,6 +444,27 @@ DashScope bills **multimodal embedding** in **CNY per 1,000 input tokens**, by m
 Indexing sends **video** chunks (video modality); each `search` / `img` query is mostly **text** or **image** tokens, which are cheaper per token than video. Your real cost is the **token counts returned by DashScope** for each API call (depends on resolution, duration, sampling such as `DASHSCOPE_VIDEO_FPS`, etc.)—there is no fixed “$ per hour of footage” like Gemini’s published per-frame USD rate without measuring your workload.
 
 Alibaba also documents a **free token allowance** (e.g. 1M tokens within a limited period after activation); confirm in the [DashScope multimodal embedding metering & billing](https://help.aliyun.com/dashscope/developer-reference/one-peace-multimodal-embedding-metering-and-billing) page and in the Model Studio / billing console, since **pricing, regions, and promotions change**.
+
+### Rate limiting (free-tier keys)
+
+Free-tier API keys have low per-minute request ceilings, and indexing a large directory can trip them mid-run. Use `--rpm` to pace outbound calls:
+
+```bash
+sentrysearch index /path/to/footage --rpm 10
+```
+
+Or set it once, for every command:
+
+```bash
+export GEMINI_RPM=10        # gemini backend
+export DASHSCOPE_RPM=10     # qwen-cloud backend
+```
+
+`--rpm` overrides the environment variable, and is available on `index`, `search`, `img`, `highlights`, and `shell`. It's ignored by `--backend local`, which makes no API calls. Embedding and reranking share a single window, since both draw on the same project quota.
+
+**`--rpm` only helps with per-minute limits.** Free tiers also have a **daily** request cap, and no amount of throttling gets you past that — it just spreads the same number of requests over more hours. If you hit the daily quota, indexing stops until it resets at midnight Pacific. Indexing is incremental, so re-running the next day resumes where it left off rather than starting over. Check your project's actual limits in [AI Studio](https://aistudio.google.com).
+
+For reference, at the default 30s chunks with 5s overlap, a 1-minute clip produces 3 requests — so an hour of footage across 4 cameras is roughly 720 requests. For large backlogs, [the local backend](#local-backend-no-api-key-needed) has no quota at all.
 
 ### Indexing tuning (both backends)
 

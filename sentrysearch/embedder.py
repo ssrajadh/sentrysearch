@@ -22,7 +22,7 @@ def get_embedder(backend: str = "gemini", **kwargs) -> BaseEmbedder:
     if _current_embedder is None:
         if backend == "gemini":
             from .gemini_embedder import GeminiEmbedder
-            _current_embedder = GeminiEmbedder()
+            _current_embedder = GeminiEmbedder(rpm=kwargs.get("rpm"))
         elif backend == "local":
             from .local_embedder import LocalEmbedder
             model = kwargs.get("model", "qwen8b")
@@ -37,6 +37,8 @@ def get_embedder(backend: str = "gemini", **kwargs) -> BaseEmbedder:
             qkw: dict = {"model_name": qc_model, "dimensions": dims}
             if vfps is not None:
                 qkw["video_fps"] = vfps
+            if kwargs.get("rpm") is not None:
+                qkw["rpm"] = kwargs["rpm"]
             _current_embedder = QwenCloudEmbedder(**qkw)
         else:
             raise ValueError(f"Unknown backend: {backend}")
@@ -47,6 +49,8 @@ def reset_embedder():
     """Reset the cached embedder (for switching backends)."""
     global _current_embedder
     _current_embedder = None
+    from .gemini_embedder import reset_limiter
+    reset_limiter()
 
 
 # Convenience functions — backward compatible with existing callers

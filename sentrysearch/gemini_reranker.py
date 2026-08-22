@@ -11,8 +11,8 @@ from dotenv import load_dotenv
 from .gemini_embedder import (
     GeminiAPIKeyError,
     GeminiEmbedder,
-    _RateLimiter,
     _retry,
+    get_limiter,
 )
 from .reranker import (
     RERANK_SCHEMA,
@@ -29,7 +29,7 @@ RERANK_MODEL = "gemini-2.5-flash"
 class GeminiReranker:
     """Gemini Flash reranker for candidate video clips."""
 
-    def __init__(self):
+    def __init__(self, rpm: int | None = None):
         from google import genai
 
         api_key = os.environ.get("GEMINI_API_KEY")
@@ -41,7 +41,8 @@ class GeminiReranker:
                 "  export GEMINI_API_KEY=your-key"
             )
         self._client = genai.Client(api_key=api_key)
-        self._limiter = _RateLimiter()
+        # Shared with the embedder: same project quota, one window.
+        self._limiter = get_limiter(rpm)
 
     def score(
         self,
