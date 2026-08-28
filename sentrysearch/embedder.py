@@ -7,6 +7,11 @@ Re-exports error classes from gemini_embedder for existing import sites.
 
 from .base_embedder import BaseEmbedder
 from .gemini_embedder import GeminiAPIKeyError, GeminiQuotaError  # noqa: F401
+from .orca_embedder import (  # noqa: F401
+    OrcaAPIError,
+    OrcaAPIKeyError,
+    default_orca_embedding_model,
+)
 from .qwen_cloud_embedder import (  # noqa: F401
     DashScopeAPIKeyError,
     DashScopeDependencyError,
@@ -29,6 +34,9 @@ def get_embedder(backend: str = "gemini", **kwargs) -> BaseEmbedder:
             dims = kwargs.get("dimensions", 768)
             quantize = kwargs.get("quantize", None)
             _current_embedder = LocalEmbedder(model_name=model, dimensions=dims, quantize=quantize)
+        elif backend == "orca":
+            from .orca_embedder import OrcaEmbedder
+            _current_embedder = OrcaEmbedder(rpm=kwargs.get("rpm"))
         elif backend == "qwen-cloud":
             from .qwen_cloud_embedder import QwenCloudEmbedder
             qc_model = kwargs.get("model")
@@ -49,8 +57,10 @@ def reset_embedder():
     """Reset the cached embedder (for switching backends)."""
     global _current_embedder
     _current_embedder = None
-    from .gemini_embedder import reset_limiter
-    reset_limiter()
+    from .gemini_embedder import reset_limiter as reset_gemini_limiter
+    from .orca_embedder import reset_limiter as reset_orca_limiter
+    reset_gemini_limiter()
+    reset_orca_limiter()
 
 
 # Convenience functions — backward compatible with existing callers

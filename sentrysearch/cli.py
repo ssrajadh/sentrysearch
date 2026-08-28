@@ -14,9 +14,10 @@ _ENV_PATH = os.path.join(os.path.expanduser("~"), ".sentrysearch", ".env")
 load_dotenv(_ENV_PATH)
 load_dotenv()  # cwd .env can override
 
+from .orca_embedder import default_orca_embedding_model
 from .qwen_cloud_embedder import default_dashscope_embedding_model
 
-_BACKEND_CHOICES = ["gemini", "local", "qwen-cloud"]
+_BACKEND_CHOICES = ["gemini", "local", "orca", "qwen-cloud"]
 
 _MODEL_FLAG_HELP_SUFFIX = (
     " Mutually exclusive with --dashscope-model (do not pass both)."
@@ -24,16 +25,29 @@ _MODEL_FLAG_HELP_SUFFIX = (
 _DASHSCOPE_MODEL_FLAG_HELP_SUFFIX = (
     " Mutually exclusive with --model (do not pass both)."
 )
+_ORCA_MODEL_FLAG_HELP_SUFFIX = (
+    " Mutually exclusive with --model and --dashscope-model (do not pass both)."
+)
 
 
 def _reject_conflicting_model_flags(
-    model: str | None, dashscope_model: str | None,
+    model: str | None, dashscope_model: str | None, orca_model: str | None = None,
 ) -> None:
-    """Raise if both local and DashScope model selectors are set."""
+    """Raise if more than one provider model selector is set."""
     if model is not None and dashscope_model is not None:
         raise click.UsageError(
             "Use only one of --model (local backend) or --dashscope-model "
             "(qwen-cloud / DashScope), not both."
+        )
+    if orca_model is not None and model is not None:
+        raise click.UsageError(
+            "Use only one of --model (local backend) or --orca-model "
+            "(orca / OrcaRouter), not both."
+        )
+    if orca_model is not None and dashscope_model is not None:
+        raise click.UsageError(
+            "Use only one of --dashscope-model (qwen-cloud / DashScope) "
+            "or --orca-model (orca / OrcaRouter), not both."
         )
 
 
@@ -112,6 +126,10 @@ def _get_search_reranker(
             model_name=model or "qwen8b",
             quantize=quantize,
         ).load()
+
+    if backend == "orca":
+        from .orca_reranker import OrcaReranker
+        return OrcaReranker()
 
     from .gemini_reranker import GeminiReranker
     return GeminiReranker()
@@ -215,12 +233,19 @@ def _handle_error(e: Exception) -> None:
     """Print a user-friendly error and exit."""
     from .gemini_embedder import GeminiAPIKeyError, GeminiQuotaError
     from .local_embedder import LocalModelError
+    from .orca_embedder import OrcaAPIError, OrcaAPIKeyError
     from .store import BackendMismatchError
 
     if isinstance(e, GeminiAPIKeyError):
         click.secho("Error: " + str(e), fg="red", err=True)
         raise SystemExit(1)
     if isinstance(e, GeminiQuotaError):
+        click.secho("Error: " + str(e), fg="yellow", err=True)
+        raise SystemExit(1)
+    if isinstance(e, OrcaAPIKeyError):
+        click.secho("Error: " + str(e), fg="red", err=True)
+        raise SystemExit(1)
+    if isinstance(e, OrcaAPIError):
         click.secho("Error: " + str(e), fg="yellow", err=True)
         raise SystemExit(1)
     if isinstance(e, LocalModelError):
@@ -417,18 +442,24 @@ def init():
                    "(default: env DASHSCOPE_EMBEDDING_MODEL or qwen3-vl-embedding). "
                    "Implies --backend qwen-cloud."
                    + _DASHSCOPE_MODEL_FLAG_HELP_SUFFIX)
+@click.option("--orca-model", default=None, show_default=False,
+              help="OrcaRouter embedding model id for --backend orca "
+                   "(default: env ORCAROUTER_EMBEDDING_MODEL or "
+                   "google/gemini-embedding-2-preview). Implies --backend orca."
+                   + _ORCA_MODEL_FLAG_HELP_SUFFIX)
 @click.option("--quantize/--no-quantize", default=None,
               help="Enable/disable 4-bit quantization for local backend (default: auto-detect).")
 @click.option("--retry-failed", is_flag=True,
               help="Retry chunks that previously failed and were routed to the DLQ.")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
 @click.option("--rpm", default=None, type=click.IntRange(min=1),
-              help="Max requests/minute to the cloud API (gemini, qwen-cloud). "
+              help="Max requests/minute to the cloud API (gemini, orca, qwen-cloud). "
                    "Lower this if you hit rate limits on a free-tier key. "
-                   "Overrides GEMINI_RPM / DASHSCOPE_RPM. Ignored by --backend local.")
+                   "Overrides GEMINI_RPM / ORCAROUTER_RPM / DASHSCOPE_RPM. "
+                   "Ignored by --backend local.")
 def index(directory, chunk_duration, overlap, preprocess, target_resolution,
-          target_fps, skip_still, backend, model, dashscope_model, quantize,
-          retry_failed, verbose, rpm):
+          target_fps, skip_still, backend, model, dashscope_model, orca_model,
+          quantize, retry_failed, verbose, rpm):
     """Index supported video files in DIRECTORY for searching."""
     from .chunker import (
         SUPPORTED_VIDEO_EXTENSIONS,
@@ -445,23 +476,28 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
     from .store import SentryStore
 
     try:
-        _reject_conflicting_model_flags(model, dashscope_model)
+        _reject_conflicting_model_flags(model, dashscope_model, orca_model)
         if overlap >= chunk_duration:
             raise click.BadParameter(
                 f"overlap ({overlap}s) must be less than chunk_duration ({chunk_duration}s).",
                 param_hint="'--overlap'",
             )
 
-        # --model implies --backend local; --dashscope-model implies qwen-cloud
+        # --model implies --backend local; --dashscope-model implies qwen-cloud;
+        # --orca-model implies orca
         if model is not None and backend is None:
             backend = "local"
         if dashscope_model is not None and backend is None:
             backend = "qwen-cloud"
+        if orca_model is not None and backend is None:
+            backend = "orca"
         if backend is None:
             backend = "gemini"
 
         if backend == "qwen-cloud":
             model = dashscope_model or default_dashscope_embedding_model()
+        elif backend == "orca":
+            model = orca_model or default_orca_embedding_model()
         elif backend == "local":
             # Auto-detect model from hardware when using local backend
             if model is None:
@@ -681,6 +717,10 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
               help="DashScope model id for qwen-cloud (default: from index or "
                    "DASHSCOPE_EMBEDDING_MODEL). Implies --backend qwen-cloud."
                    + _DASHSCOPE_MODEL_FLAG_HELP_SUFFIX)
+@click.option("--orca-model", default=None, show_default=False,
+              help="OrcaRouter model id for orca (default: from index or "
+                   "ORCAROUTER_EMBEDDING_MODEL). Implies --backend orca."
+                   + _ORCA_MODEL_FLAG_HELP_SUFFIX)
 @click.option("--quantize/--no-quantize", default=None,
               help="Enable/disable 4-bit quantization for local backend (default: auto-detect).")
 @click.option("--dedupe", "dedupe_threshold", default=None, type=float,
@@ -690,10 +730,11 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
               help="Use a VLM to rerank candidates before trimming.")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
 @click.option("--rpm", default=None, type=click.IntRange(min=1),
-              help="Max requests/minute to the cloud API (gemini, qwen-cloud). "
+              help="Max requests/minute to the cloud API (gemini, orca, qwen-cloud). "
                    "Lower this if you hit rate limits on a free-tier key. "
-                   "Overrides GEMINI_RPM / DASHSCOPE_RPM. Ignored by --backend local.")
-def search(query, n_results, output_dir, trim, save_top, threshold, overlay, backend, model, dashscope_model, quantize, dedupe_threshold, rerank, verbose, rpm):
+                   "Overrides GEMINI_RPM / ORCAROUTER_RPM / DASHSCOPE_RPM. "
+                   "Ignored by --backend local.")
+def search(query, n_results, output_dir, trim, save_top, threshold, overlay, backend, model, dashscope_model, orca_model, quantize, dedupe_threshold, rerank, verbose, rpm):
     """Search indexed footage with a natural language QUERY."""
     from .embedder import get_embedder, reset_embedder
     from .local_embedder import normalize_model_key
@@ -703,12 +744,15 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
     output_dir = os.path.expanduser(output_dir)
 
     try:
-        _reject_conflicting_model_flags(model, dashscope_model)
+        _reject_conflicting_model_flags(model, dashscope_model, orca_model)
         if dashscope_model is not None and backend is None:
             backend = "qwen-cloud"
         # --model implies --backend local
         if model is not None and backend is None:
             backend = "local"
+        # --orca-model implies --backend orca
+        if orca_model is not None and backend is None:
+            backend = "orca"
 
         if backend == "local" and model is not None:
             model = normalize_model_key(model)
@@ -728,6 +772,12 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
             elif model is None:
                 _, detected_model = detect_index()
                 model = detected_model or default_dashscope_embedding_model()
+        elif backend == "orca":
+            if orca_model is not None:
+                model = orca_model
+            elif model is None:
+                _, detected_model = detect_index()
+                model = detected_model or default_orca_embedding_model()
 
         store = SentryStore(backend=backend, model=model)
 
@@ -773,11 +823,12 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
         if rerank and results:
             from .gemini_embedder import GeminiAPIKeyError
             from .local_embedder import LocalModelError
+            from .orca_embedder import OrcaAPIKeyError
             from .reranker import rerank_results
 
             try:
                 reranker = _get_search_reranker(backend, model, quantize)
-            except (GeminiAPIKeyError, LocalModelError) as exc:
+            except (GeminiAPIKeyError, LocalModelError, OrcaAPIKeyError) as exc:
                 click.secho(
                     f"--rerank skipped: {_first_error_line(exc)}; "
                     "showing embedding results.",
@@ -920,6 +971,9 @@ def _present_results(
 @click.option("--dashscope-model", default=None,
               help="DashScope model id for qwen-cloud (implies --backend qwen-cloud)."
                    + _DASHSCOPE_MODEL_FLAG_HELP_SUFFIX)
+@click.option("--orca-model", default=None,
+              help="OrcaRouter model id for orca (implies --backend orca)."
+                   + _ORCA_MODEL_FLAG_HELP_SUFFIX)
 @click.option("--quantize/--no-quantize", default=None,
               help="Enable/disable 4-bit quantization for local backend.")
 @click.option("--dedupe", "dedupe_threshold", default=None, type=float,
@@ -927,11 +981,12 @@ def _present_results(
                    "result exceeds this (e.g. 0.9).")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
 @click.option("--rpm", default=None, type=click.IntRange(min=1),
-              help="Max requests/minute to the cloud API (gemini, qwen-cloud). "
+              help="Max requests/minute to the cloud API (gemini, orca, qwen-cloud). "
                    "Lower this if you hit rate limits on a free-tier key. "
-                   "Overrides GEMINI_RPM / DASHSCOPE_RPM. Ignored by --backend local.")
+                   "Overrides GEMINI_RPM / ORCAROUTER_RPM / DASHSCOPE_RPM. "
+                   "Ignored by --backend local.")
 def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
-        backend, model, dashscope_model, quantize, dedupe_threshold, verbose, rpm):
+        backend, model, dashscope_model, orca_model, quantize, dedupe_threshold, verbose, rpm):
     """Search indexed footage using an IMAGE as the query."""
     from .embedder import get_embedder, reset_embedder
     from .local_embedder import normalize_model_key
@@ -941,11 +996,13 @@ def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
     output_dir = os.path.expanduser(output_dir)
 
     try:
-        _reject_conflicting_model_flags(model, dashscope_model)
+        _reject_conflicting_model_flags(model, dashscope_model, orca_model)
         if dashscope_model is not None and backend is None:
             backend = "qwen-cloud"
         if model is not None and backend is None:
             backend = "local"
+        if orca_model is not None and backend is None:
+            backend = "orca"
         if backend == "local" and model is not None:
             model = normalize_model_key(model)
         if backend is None:
@@ -961,6 +1018,12 @@ def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
             elif model is None:
                 _, detected_model = detect_index()
                 model = detected_model or default_dashscope_embedding_model()
+        elif backend == "orca":
+            if orca_model is not None:
+                model = orca_model
+            elif model is None:
+                _, detected_model = detect_index()
+                model = detected_model or default_orca_embedding_model()
 
         store = SentryStore(backend=backend, model=model)
 
@@ -1024,20 +1087,24 @@ def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
               help="Directory to save trimmed clips.")
 @click.option("--overlay/--no-overlay", default=False, show_default=True,
               help="Burn Tesla telemetry overlay onto trimmed clips.")
-@click.option("--backend", type=click.Choice(["gemini", "local"]), default=None,
+@click.option("--backend", type=click.Choice(_BACKEND_CHOICES), default=None,
               help="Embedding backend (auto-detected from index if omitted).")
 @click.option("--model", default=None,
               help="Model for local backend (default: auto-detect from index).")
+@click.option("--orca-model", default=None,
+              help="OrcaRouter model id for orca (implies --backend orca)."
+                   + _ORCA_MODEL_FLAG_HELP_SUFFIX)
 @click.option("--quantize/--no-quantize", default=None,
               help="Enable/disable 4-bit quantization for local backend.")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
 @click.option("--rpm", default=None, type=click.IntRange(min=1),
-              help="Max requests/minute to the cloud API (gemini, qwen-cloud). "
+              help="Max requests/minute to the cloud API (gemini, orca, qwen-cloud). "
                    "Lower this if you hit rate limits on a free-tier key. "
-                   "Overrides GEMINI_RPM / DASHSCOPE_RPM. Ignored by --backend local.")
+                   "Overrides GEMINI_RPM / ORCAROUTER_RPM / DASHSCOPE_RPM. "
+                   "Ignored by --backend local.")
 def highlights(count, method, neighbors, against, against_mode, dedupe_threshold,
                exclude_baseline, trim, output_dir, overlay, backend, model,
-               quantize, verbose, rpm):
+               orca_model, quantize, verbose, rpm):
     """Surface the most anomalous clips in the indexed footage.
 
     Useful when you don't know what to search for — finds chunks whose
@@ -1055,6 +1122,8 @@ def highlights(count, method, neighbors, against, against_mode, dedupe_threshold
     try:
         if model is not None and backend is None:
             backend = "local"
+        if orca_model is not None and backend is None:
+            backend = "orca"
         if model is not None:
             model = normalize_model_key(model)
         if backend is None:
@@ -1064,6 +1133,12 @@ def highlights(count, method, neighbors, against, against_mode, dedupe_threshold
                 model = detected_model
         elif backend == "local" and model is None:
             _, model = detect_index()
+        elif backend == "orca":
+            if orca_model is not None:
+                model = orca_model
+            elif model is None:
+                _, detected_model = detect_index()
+                model = detected_model or default_orca_embedding_model()
 
         store = SentryStore(backend=backend, model=model)
         if store.get_stats()["total_chunks"] == 0:
@@ -1164,6 +1239,9 @@ def _print_shell_results(results, threshold):
 @click.option("--dashscope-model", default=None,
               help="DashScope model id for qwen-cloud (implies --backend qwen-cloud)."
                    + _DASHSCOPE_MODEL_FLAG_HELP_SUFFIX)
+@click.option("--orca-model", default=None,
+              help="OrcaRouter model id for orca (implies --backend orca)."
+                   + _ORCA_MODEL_FLAG_HELP_SUFFIX)
 @click.option("--quantize/--no-quantize", default=None,
               help="Enable/disable 4-bit quantization for local backend.")
 @click.option("-n", "--results", "n_results", default=5, show_default=True,
@@ -1172,10 +1250,11 @@ def _print_shell_results(results, threshold):
               help="Minimum similarity score to consider a confident match.")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
 @click.option("--rpm", default=None, type=click.IntRange(min=1),
-              help="Max requests/minute to the cloud API (gemini, qwen-cloud). "
+              help="Max requests/minute to the cloud API (gemini, orca, qwen-cloud). "
                    "Lower this if you hit rate limits on a free-tier key. "
-                   "Overrides GEMINI_RPM / DASHSCOPE_RPM. Ignored by --backend local.")
-def shell(backend, model, dashscope_model, quantize, n_results, threshold, verbose, rpm):
+                   "Overrides GEMINI_RPM / ORCAROUTER_RPM / DASHSCOPE_RPM. "
+                   "Ignored by --backend local.")
+def shell(backend, model, dashscope_model, orca_model, quantize, n_results, threshold, verbose, rpm):
     """Start an interactive search session that keeps the model loaded.
 
     Useful for running multiple queries back-to-back with the local
@@ -1193,12 +1272,14 @@ def shell(backend, model, dashscope_model, quantize, n_results, threshold, verbo
     from .store import SentryStore, detect_index
 
     try:
-        _reject_conflicting_model_flags(model, dashscope_model)
+        _reject_conflicting_model_flags(model, dashscope_model, orca_model)
         # Resolve backend/model (mirrors `search`)
         if dashscope_model is not None and backend is None:
             backend = "qwen-cloud"
         if model is not None and backend is None:
             backend = "local"
+        if orca_model is not None and backend is None:
+            backend = "orca"
         if backend == "local" and model is not None:
             model = normalize_model_key(model)
         if backend is None:
@@ -1214,6 +1295,12 @@ def shell(backend, model, dashscope_model, quantize, n_results, threshold, verbo
             elif model is None:
                 _, detected_model = detect_index()
                 model = detected_model or default_dashscope_embedding_model()
+        elif backend == "orca":
+            if orca_model is not None:
+                model = orca_model
+            elif model is None:
+                _, detected_model = detect_index()
+                model = detected_model or default_orca_embedding_model()
 
         store = SentryStore(backend=backend, model=model)
         stats = store.get_stats()

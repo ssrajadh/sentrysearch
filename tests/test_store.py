@@ -190,6 +190,26 @@ class TestStoreBackend:
         assert "/" not in suffix and ":" not in suffix and "@" not in suffix
         assert all(c.isalnum() or c in "._-" for c in suffix)
 
+    def test_orca_backend_collection_name(self, tmp_path):
+        from sentrysearch.store import SentryStore
+
+        store = SentryStore(
+            db_path=tmp_path / "db",
+            backend="orca",
+            model="google/gemini-embedding-2-preview",
+        )
+        assert store.collection.name == (
+            "dashcam_chunks_orca_google_gemini-embedding-2-preview"
+        )
+
+    def test_orca_backend_default_collection_name(self, tmp_path):
+        from sentrysearch.store import SentryStore
+
+        store = SentryStore(db_path=tmp_path / "db", backend="orca")
+        assert store.collection.name == (
+            "dashcam_chunks_orca_google_gemini-embedding-2-preview"
+        )
+
     def test_backends_use_separate_collections(self, tmp_path):
         from sentrysearch.store import SentryStore
 
@@ -354,3 +374,35 @@ class TestDetectIndex:
             "source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0,
         })
         assert detect_index(tmp_path / "db") == ("qwen-cloud", "qwen3-vl-embedding")
+
+    def test_detects_orca_backend(self, tmp_path):
+        from sentrysearch.store import SentryStore, detect_index
+
+        store = SentryStore(
+            db_path=tmp_path / "db",
+            backend="orca",
+            model="google/gemini-embedding-2-preview",
+        )
+        store.add_chunk("c1", _make_embedding(), {
+            "source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0,
+        })
+        assert detect_index(tmp_path / "db") == (
+            "orca", "google/gemini-embedding-2-preview",
+        )
+
+    def test_gemini_preferred_over_orca(self, tmp_path):
+        from sentrysearch.store import SentryStore, detect_index
+
+        db = tmp_path / "db"
+        emb = _make_embedding()
+        gemini = SentryStore(db_path=db, backend="gemini")
+        gemini.add_chunk("g1", emb, {
+            "source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0,
+        })
+        orca = SentryStore(
+            db_path=db, backend="orca", model="google/gemini-embedding-2-preview",
+        )
+        orca.add_chunk("o1", emb, {
+            "source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0,
+        })
+        assert detect_index(db) == ("gemini", None)

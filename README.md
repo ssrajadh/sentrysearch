@@ -27,6 +27,7 @@ Semantic search over video footage. Type what you're looking for, get a trimmed 
   - [Search by image](#search-by-image)
   - [Highlights](#highlights)
   - [Qwen Cloud (Alibaba DashScope)](#qwen-cloud-alibaba-dashscope)
+  - [OrcaRouter](#orcarouter)
   - [Local Backend (no API key needed)](#local-backend-no-api-key-needed)
   - [Why the local model is fast](#why-the-local-model-is-fast)
   - [Tesla Metadata Overlay](#tesla-metadata-overlay)
@@ -45,7 +46,7 @@ Semantic search over video footage. Type what you're looking for, get a trimmed 
 
 ## How it works
 
-SentrySearch splits your videos into overlapping chunks, embeds each chunk as video using Google's Gemini Embedding API, Alibaba DashScope (**qwen-cloud**), or a local Qwen3-VL model, and stores the vectors in a local ChromaDB database. When you search, your text query (or image, see [search by image](#search-by-image)) is embedded into the same vector space and matched against the stored video embeddings. The top match is automatically trimmed from the original file and saved as a clip.
+SentrySearch splits your videos into overlapping chunks, embeds each chunk as video using Google's Gemini Embedding API, Alibaba DashScope (**qwen-cloud**), **OrcaRouter** (**orca**), or a local Qwen3-VL model, and stores the vectors in a local ChromaDB database. When you search, your text query (or image, see [search by image](#search-by-image)) is embedded into the same vector space and matched against the stored video embeddings. The top match is automatically trimmed from the original file and saved as a clip.
 
 ## Getting Started
 
@@ -76,7 +77,7 @@ uv tool install .
 > uv tool install --python 3.12 .
 > ```
 
-3. Set up your API key (or [use a local model instead](#local-backend-no-api-key-needed)) — **only needed for the default Gemini backend**; skip if you use `--backend local` or `--backend qwen-cloud` with `DASHSCOPE_API_KEY` in `.env`.
+3. Set up your API key (or [use a local model instead](#local-backend-no-api-key-needed)) — **only needed for the default Gemini backend**; skip if you use `--backend local`, `--backend qwen-cloud` with `DASHSCOPE_API_KEY` in `.env`, or `--backend orca` with `ORCAROUTER_API_KEY` in `.env`.
 
 ```bash
 sentrysearch init
@@ -167,7 +168,7 @@ sentrysearch search "pedestrian crossing behind the car" --rerank --results 10
 
 The `--dedupe` value is a cosine similarity ceiling (0–1). Any result whose similarity to an already-kept higher-ranked result exceeds this value is dropped. Lower values are stricter: `0.8` requires results to be very distinct, `0.95` only removes near-identical chunks. `0.9` is a good default.
 
-`--rerank` extracts each returned candidate clip, sends it to a VLM with the query, and sorts likely visual matches ahead of embedding-only results. Gemini and qwen-cloud searches use Gemini 2.5 Flash for reranking; local searches use a local Qwen3-VL Instruct reranker. If reranking cannot run or a candidate cannot be scored, SentrySearch keeps the embedding-ranked results instead of failing the search.
+`--rerank` extracts each returned candidate clip, sends it to a VLM with the query, and sorts likely visual matches ahead of embedding-only results. Gemini, orca, and qwen-cloud searches use Gemini 2.5 Flash (via the respective gateway) for reranking; local searches use a local Qwen3-VL Instruct reranker. If reranking cannot run or a candidate cannot be scored, SentrySearch keeps the embedding-ranked results instead of failing the search.
 
 ### Search by image
 
@@ -228,6 +229,22 @@ sentrysearch search "your query" --backend qwen-cloud
 ```
 
 **Video uploads:** local chunk files are sent to **DashScope-managed temporary OSS by the official Python SDK** before the API consumes them (the HTTP API expects a URL; the SDK handles upload for you).
+
+### OrcaRouter
+
+Use the optional **orca** backend for [OrcaRouter](https://www.orcarouter.ai) — an OpenAI-compatible AI gateway built for both models and agents. Like OpenRouter, it exposes a provider/model namespace across many models (e.g. `google/gemini-embedding-2-preview` for embeddings, `google/gemini-2.5-flash` for reranking), but it also combines adaptive routing, automatic failover, zero-markup inference, observability, guardrails, and agent-tool governance behind the same endpoint. Adding it as a first-class backend means SentrySearch can route its embedding and rerank traffic through that stack directly, instead of treating OrcaRouter as an anonymous custom base URL. It also runs gateway-level, zero-trust security for AI agents on the same endpoint — screening every prompt/response and governing every tool call on a default-deny basis, with no application code changes.
+
+No extra install is needed — the `orca` backend reuses the same `google-genai` SDK that already powers the `gemini` backend, pointed at the gateway:
+
+```bash
+export ORCAROUTER_API_KEY=...
+sentrysearch index /path/to/footage --backend orca
+sentrysearch search "your query" --backend orca
+```
+
+The default embedding model is `google/gemini-embedding-2-preview`, overridable with `--orca-model` or `ORCAROUTER_EMBEDDING_MODEL`; `--rerank` uses `google/gemini-2.5-flash` (override with `ORCAROUTER_RERANK_MODEL`). The embedder and reranker share one rate-limit window, controlled by `--rpm` or `ORCAROUTER_RPM`.
+
+> **Why use OrcaRouter over the Gemini API directly?** You get a single key/endpoint across many models with adaptive routing and automatic failover between upstreams, plus gateway-level guardrails and observability on the same request path — useful when you index footage from multiple machines or want a consistent interface across projects.
 
 ### Local Backend (no API key needed)
 
@@ -414,7 +431,7 @@ Add `--verbose` to either command for debug info (embedding dimensions, API resp
 
 ## How is this possible?
 
-Both Gemini Embedding 2 and Qwen3-VL-Embedding can natively embed video — raw video pixels are projected into the same vector space as text queries. There's no transcription, no frame captioning, no text middleman. A text query like "red truck at a stop sign" is directly comparable to a 30-second video clip at the vector level. This is what makes sub-second semantic search over hours of footage practical.
+Both Gemini Embedding 2 and Qwen3-VL-Embedding can natively embed video — raw video pixels are projected into the same vector space as text queries. There's no transcription, no frame captioning, no text middleman. A text query like "red truck at a stop sign" is directly comparable to a 30-second video clip at the vector level. This is what makes sub-second semantic search over hours of footage practical. The orca backend embeds through the same Gemini Embedding 2 models, served via the OrcaRouter gateway.
 
 ## Cost
 
@@ -457,6 +474,7 @@ Or set it once, for every command:
 
 ```bash
 export GEMINI_RPM=10        # gemini backend
+export ORCAROUTER_RPM=10    # orca backend
 export DASHSCOPE_RPM=10     # qwen-cloud backend
 ```
 
@@ -497,6 +515,7 @@ This works with `.mp4` and `.mov` footage, not just Tesla Sentry Mode. The direc
 - Python 3.11+
 - `ffmpeg` on PATH, or use bundled ffmpeg via `imageio-ffmpeg` (installed by default)
 - **Gemini backend:** Gemini API key ([get one free](https://aistudio.google.com/apikey))
+- **OrcaRouter backend:** OrcaRouter API key ([get one](https://www.orcarouter.ai))
 - **Local backend:**
   - GPU with CUDA or Apple Metal (see [hardware table](#local-backend-no-api-key-needed) for VRAM/RAM requirements)
   - **macOS:** `brew install ffmpeg` (required by the video decoder)

@@ -32,6 +32,9 @@ def _collection_name(backend: str, model: str | None = None) -> str:
     if backend == "qwen-cloud":
         slug = _chroma_collection_slug(model or "qwen3-vl-embedding")
         return f"dashcam_chunks_qwen_cloud_{slug}"
+    if backend == "orca":
+        slug = _chroma_collection_slug(model or "google/gemini-embedding-2-preview")
+        return f"dashcam_chunks_orca_{slug}"
     if model:
         return f"dashcam_chunks_local_{model}"
     # Legacy: local backend without model distinction
@@ -42,9 +45,9 @@ def detect_index(db_path: str | Path | None = None) -> tuple[str | None, str | N
     """Return ``(backend, model)`` for the first index with data.
 
     Returns ``(None, None)`` when no index contains data.
-    Checks gemini first, then DashScope ``qwen-cloud`` collections, then
-    model-specific local collections, then the legacy ``dashcam_chunks_local``
-    collection (treated as qwen8b).
+    Checks gemini first, then OrcaRouter ``orca`` collections, then DashScope
+    ``qwen-cloud`` collections, then model-specific local collections, then the
+    legacy ``dashcam_chunks_local`` collection (treated as qwen8b).
     """
     db_path = str(db_path or DEFAULT_DB_PATH)
     if not Path(db_path).exists():
@@ -57,6 +60,17 @@ def detect_index(db_path: str | Path | None = None) -> tuple[str | None, str | N
         col = client.get_collection("dashcam_chunks")
         if col.count() > 0:
             return "gemini", None
+
+    # OrcaRouter (dashcam_chunks_orca_<model>)
+    for name in sorted(existing):
+        if name.startswith("dashcam_chunks_orca_"):
+            col = client.get_collection(name)
+            if col.count() > 0:
+                meta = col.metadata or {}
+                model = meta.get("embedding_model")
+                if model is None:
+                    model = name.removeprefix("dashcam_chunks_orca_")
+                return "orca", model
 
     # DashScope qwen-cloud (dashcam_chunks_qwen_cloud_<model>)
     for name in sorted(existing):

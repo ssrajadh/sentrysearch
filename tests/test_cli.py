@@ -63,6 +63,75 @@ class TestModelDashscopeFlagConflict:
         ])
         assert result.exit_code == 2
 
+    def test_index_rejects_orca_and_local_model_flags(self, runner, tmp_path):
+        d = tmp_path / "empty"
+        d.mkdir()
+        result = runner.invoke(cli, [
+            "index", str(d),
+            "--model", "qwen2b",
+            "--orca-model", "google/gemini-embedding-2-preview",
+        ])
+        assert result.exit_code == 2
+        out = (result.output or "") + (result.stderr or "")
+        assert "not both" in out.lower() or "only one of" in out.lower()
+
+    def test_index_rejects_orca_and_dashscope_model_flags(self, runner, tmp_path):
+        d = tmp_path / "empty"
+        d.mkdir()
+        result = runner.invoke(cli, [
+            "index", str(d),
+            "--dashscope-model", "qwen3-vl-embedding",
+            "--orca-model", "google/gemini-embedding-2-preview",
+        ])
+        assert result.exit_code == 2
+        out = (result.output or "") + (result.stderr or "")
+        assert "not both" in out.lower() or "only one of" in out.lower()
+
+
+class TestIndexOrcaFlags:
+    def test_index_orca_model_implies_orca_backend(self, runner, tmp_path):
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()) as mock_get:
+            MockStore.return_value = MagicMock()
+            result = runner.invoke(cli, [
+                "index", str(empty_dir), "--orca-model", "custom/orca-model",
+            ])
+            assert result.exit_code == 0
+            mock_get.assert_called_once()
+            assert mock_get.call_args[0][0] == "orca"
+            assert mock_get.call_args[1]["model"] == "custom/orca-model"
+
+    def test_index_explicit_orca_backend_default_model(self, runner, tmp_path):
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()) as mock_get:
+            MockStore.return_value = MagicMock()
+            result = runner.invoke(cli, [
+                "index", str(empty_dir), "--backend", "orca",
+            ])
+            assert result.exit_code == 0
+            mock_get.assert_called_once()
+            assert mock_get.call_args[0][0] == "orca"
+            assert mock_get.call_args[1]["model"] == "google/gemini-embedding-2-preview"
+
+    def test_search_orca_model_implies_orca_backend(self, runner):
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()) as mock_get, \
+             patch("sentrysearch.search.search_footage", return_value=[]) as mock_search:
+            inst = MagicMock()
+            inst.get_stats.return_value = {"total_chunks": 3}
+            MockStore.return_value = inst
+            result = runner.invoke(cli, [
+                "search", "red truck", "--orca-model", "custom/orca-model",
+            ])
+            assert result.exit_code == 0
+            mock_get.assert_called_once()
+            assert mock_get.call_args[0][0] == "orca"
+            MockStore.assert_called_once_with(backend="orca", model="custom/orca-model")
+
 
 class TestStatsCommand:
     def test_stats_empty(self, runner):
