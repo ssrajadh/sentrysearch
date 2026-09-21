@@ -16,7 +16,7 @@ load_dotenv()  # cwd .env can override
 
 from .qwen_cloud_embedder import default_dashscope_embedding_model
 
-_BACKEND_CHOICES = ["gemini", "local", "qwen-cloud"]
+_BACKEND_CHOICES = ["gemini", "local", "mlx", "qwen-cloud"]
 
 _MODEL_FLAG_HELP_SUFFIX = (
     " Mutually exclusive with --dashscope-model (do not pass both)."
@@ -112,6 +112,18 @@ def _get_search_reranker(
             model_name=model or "qwen8b",
             quantize=quantize,
         ).load()
+
+    if backend == "mlx":
+        # Falling through to the Gemini reranker would send results to an API
+        # for someone who chose a local backend, and there is no MLX reranker
+        # yet. Fail loudly rather than surprise them.
+        from .mlx_embedder import MLXModelError
+
+        raise MLXModelError(
+            "--rerank is not supported on the MLX backend yet.\n\n"
+            "Search without --rerank, or use --backend local for the "
+            "PyTorch reranker, or a cloud backend."
+        )
 
     from .gemini_reranker import GeminiReranker
     return GeminiReranker()
@@ -215,6 +227,7 @@ def _handle_error(e: Exception) -> None:
     """Print a user-friendly error and exit."""
     from .gemini_embedder import GeminiAPIKeyError, GeminiQuotaError
     from .local_embedder import LocalModelError
+    from .mlx_embedder import MLXModelError
     from .store import BackendMismatchError
 
     if isinstance(e, GeminiAPIKeyError):
@@ -223,7 +236,7 @@ def _handle_error(e: Exception) -> None:
     if isinstance(e, GeminiQuotaError):
         click.secho("Error: " + str(e), fg="yellow", err=True)
         raise SystemExit(1)
-    if isinstance(e, LocalModelError):
+    if isinstance(e, (LocalModelError, MLXModelError)):
         click.secho("Error: " + str(e), fg="red", err=True)
         raise SystemExit(1)
     if isinstance(e, BackendMismatchError):
@@ -462,6 +475,12 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
 
         if backend == "qwen-cloud":
             model = dashscope_model or default_dashscope_embedding_model()
+        elif backend == "mlx":
+            # Resolve now rather than inside the embedder, so the full
+            # reference lands in the collection metadata and a later search
+            # can reload the same model.
+            from .mlx_embedder import resolve_model_ref
+            model = resolve_model_ref(model)
         elif backend == "local":
             # Auto-detect model from hardware when using local backend
             if model is None:
@@ -719,7 +738,7 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
             backend = detected_backend or "gemini"
             if model is None:
                 model = detected_model
-        elif backend == "local" and model is None:
+        elif backend in ("local", "mlx") and model is None:
             _, detected_model = detect_index()
             model = detected_model
         elif backend == "qwen-cloud":
@@ -752,7 +771,7 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
                 )
             return
 
-        if backend == "local":
+        if backend in ("local", "mlx"):
             click.secho(
                 "Tip: `sentrysearch shell` keeps the model loaded across queries.",
                 fg="yellow", err=True,
@@ -953,7 +972,7 @@ def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
             backend = detected_backend or "gemini"
             if model is None:
                 model = detected_model
-        elif backend == "local" and model is None:
+        elif backend in ("local", "mlx") and model is None:
             _, model = detect_index()
         elif backend == "qwen-cloud":
             if dashscope_model is not None:
@@ -1062,7 +1081,7 @@ def highlights(count, method, neighbors, against, against_mode, dedupe_threshold
             backend = detected_backend or "gemini"
             if model is None:
                 model = detected_model
-        elif backend == "local" and model is None:
+        elif backend in ("local", "mlx") and model is None:
             _, model = detect_index()
 
         store = SentryStore(backend=backend, model=model)
@@ -1206,7 +1225,7 @@ def shell(backend, model, dashscope_model, quantize, n_results, threshold, verbo
             backend = detected_backend or "gemini"
             if model is None:
                 model = detected_model
-        elif backend == "local" and model is None:
+        elif backend in ("local", "mlx") and model is None:
             _, model = detect_index()
         elif backend == "qwen-cloud":
             if dashscope_model is not None:
@@ -1393,7 +1412,7 @@ def reset(backend, model):
         backend = backend or "gemini"
         if model is None:
             model = detected_model
-    elif backend == "local" and model is None:
+    elif backend in ("local", "mlx") and model is None:
         _, model = detect_index()
     elif backend == "qwen-cloud" and model is None:
         _, model = detect_index()
@@ -1436,7 +1455,7 @@ def remove(files, backend, model):
         backend = backend or "gemini"
         if model is None:
             model = detected_model
-    elif backend == "local" and model is None:
+    elif backend in ("local", "mlx") and model is None:
         _, model = detect_index()
     elif backend == "qwen-cloud" and model is None:
         _, model = detect_index()

@@ -29,6 +29,12 @@ def get_embedder(backend: str = "gemini", **kwargs) -> BaseEmbedder:
             dims = kwargs.get("dimensions", 768)
             quantize = kwargs.get("quantize", None)
             _current_embedder = LocalEmbedder(model_name=model, dimensions=dims, quantize=quantize)
+        elif backend == "mlx":
+            from .mlx_embedder import MLXEmbedder
+            _current_embedder = MLXEmbedder(
+                model_name=kwargs.get("model"),
+                dimensions=kwargs.get("dimensions", 768),
+            )
         elif backend == "qwen-cloud":
             from .qwen_cloud_embedder import QwenCloudEmbedder
             qc_model = kwargs.get("model")

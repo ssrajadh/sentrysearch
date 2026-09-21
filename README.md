@@ -29,6 +29,7 @@ Semantic search over video footage. Type what you're looking for, get a trimmed 
   - [Qwen Cloud (Alibaba DashScope)](#qwen-cloud-alibaba-dashscope)
   - [Local Backend (no API key needed)](#local-backend-no-api-key-needed)
   - [Why the local model is fast](#why-the-local-model-is-fast)
+  - [MLX Backend (Apple Silicon)](#mlx-backend-apple-silicon)
   - [Tesla Metadata Overlay](#tesla-metadata-overlay)
   - [Stitch with SentryMerge](#stitch-with-sentrymerge)
   - [Redact with SentryBlur](#redact-with-sentryblur)
@@ -295,6 +296,36 @@ The local backend stays fast and memory-efficient through a few techniques that 
 - **Still-frame skipping.** Chunks with no meaningful visual change (e.g. a parked car) are detected by comparing JPEG file sizes across sampled frames and skipped entirely — saving a full forward pass per chunk.
 
 With all of this, expect ~2-5s per chunk on an A100 and ~3-8s on a T4. On a 4090, the 8B model in bf16 should be in the low single digits per chunk.
+
+### MLX Backend (Apple Silicon)
+
+A second local backend that runs the same Qwen3-VL-Embedding model through [MLX](https://github.com/ml-explore/mlx) instead of PyTorch. Apple Silicon only. It exists because MLX can quantize on Metal and PyTorch on a Mac cannot: the `local` backend's only quantization route is bitsandbytes, which requires CUDA.
+
+```bash
+uv tool install ".[mlx]"
+sentrysearch index /path/to/footage --backend mlx
+sentrysearch search "your query" --backend mlx
+```
+
+No `--model` needed. It defaults to a 4-bit 2B build (`arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit`, ~1.8 GB) and downloads it on first use. Pass `--model` with any MLX repo id or a local converted model directory to override.
+
+Measured against the PyTorch `local` backend on the same 112 clips and 34 queries, running the same 2B model:
+
+| | retrieval top-1 | per 8s clip | weights |
+|---|---|---|---|
+| `--backend mlx` (4-bit) | 0.47 | 1.2 s | 1.8 GB |
+| `--backend local` (bf16 via MPS) | 0.44 | 2.5 s | ~4 GB |
+
+The two are level on accuracy — the gap is inside the noise of 34 queries — so 4-bit quantization costs nothing here while halving both the time and the memory.
+
+**Lower your threshold.** Similarity scores on this backend run well below the `--threshold 0.41` default, and correct matches in testing landed between 0.10 and 0.30. Start around `--threshold 0.1` and tighten from there. The two local backends are not calibrated alike, so a threshold tuned on one will misbehave on the other.
+
+**No 8B option.** An 8B build ties the 2B at best and needs roughly three times the time and memory to do it, so no 8B alias ships here. You can still point `--model` at your own conversion.
+
+**No reranking yet.** `--rerank` is rejected on this backend rather than silently falling back to the Gemini reranker, which would send your results to an API after you chose a local backend. Use `--backend local` for the PyTorch reranker.
+
+Embeddings from this backend get their own index, separate from `local`, so the two never mix. Reindex if you switch.
+
 
 ### Tesla Metadata Overlay
 

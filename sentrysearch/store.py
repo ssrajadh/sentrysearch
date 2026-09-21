@@ -32,6 +32,11 @@ def _collection_name(backend: str, model: str | None = None) -> str:
     if backend == "qwen-cloud":
         slug = _chroma_collection_slug(model or "qwen3-vl-embedding")
         return f"dashcam_chunks_qwen_cloud_{slug}"
+    if backend == "mlx":
+        # A model may be a local directory path; key on its final component so
+        # the collection name stays readable and stable across machines.
+        name = Path(model).name if model else "qwen3-vl-embedding"
+        return f"dashcam_chunks_mlx_{_chroma_collection_slug(name)}"
     if model:
         return f"dashcam_chunks_local_{model}"
     # Legacy: local backend without model distinction
@@ -68,6 +73,17 @@ def detect_index(db_path: str | Path | None = None) -> tuple[str | None, str | N
                 if model is None:
                     model = name.removeprefix("dashcam_chunks_qwen_cloud_")
                 return "qwen-cloud", model
+
+    # MLX collections (dashcam_chunks_mlx_<model>)
+    for name in sorted(existing):
+        if name.startswith("dashcam_chunks_mlx_"):
+            col = client.get_collection(name)
+            if col.count() > 0:
+                meta = col.metadata or {}
+                model = meta.get("embedding_model")
+                if model is None:
+                    model = name.removeprefix("dashcam_chunks_mlx_")
+                return "mlx", model
 
     # Model-specific local collections (dashcam_chunks_local_<model>)
     for name in sorted(existing):

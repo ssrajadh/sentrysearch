@@ -37,6 +37,17 @@ local-quantized = [
 qwen-cloud = [
     "dashscope>=1.25.17",
 ]
+# Apple Silicon only. Quantizes on Metal, which the PyTorch path cannot do
+# (its only quantization route is bitsandbytes, which is CUDA-only), so the
+# 2B runs at 4-bit in ~1.8 GB with no measured loss of retrieval accuracy.
+# The video shim in mlx_embedder.py depends on mlx-vlm internals
+# (get_input_embeddings kwargs, language_model._rope_deltas), so the upper
+# bound is deliberate -- widen it only after re-running tests/test_mlx_embedder.py
+# against the newer release.
+mlx = [
+    "mlx>=0.32.2 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-vlm>=0.7.1,<0.9 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
 
 [project.scripts]
 sentrysearch = "sentrysearch.cli:cli"
