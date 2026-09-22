@@ -115,6 +115,65 @@ def _get_video_duration(video_path: str) -> float:
     return _parse_duration_from_ffmpeg_output(result.stderr)
 
 
+
+# Tesla writes a -README_<lang>.txt beside clips it has encrypted, pointing
+# at its browser decryptor. The clips themselves aren't playable MP4s.
+_TESLA_ENCRYPTION_MARKERS = ("dashcam.tesla.com", "EncryptedClips")
+
+
+def is_tesla_encrypted(video_path: str) -> bool:
+    """True when a clip sits in a folder Tesla marked as encrypted.
+
+    Encrypted dashcam clips fail ffprobe with no hint of why, so callers use
+    this after a read failure to tell the user what actually happened.
+    """
+    path = Path(video_path)
+    if "EncryptedClips" in path.parts:
+        return True
+    try:
+        notes = [
+            f for f in path.parent.iterdir()
+            if f.is_file()
+            and f.suffix.lower() == ".txt"
+            and "readme" in f.name.lower()
+        ]
+    except OSError:
+        return False
+    for note in notes:
+        try:
+            head = note.read_text(errors="ignore")[:4096]
+        except OSError:
+            continue
+        if any(marker in head for marker in _TESLA_ENCRYPTION_MARKERS):
+            return True
+    return False
+
+
+def probe_error(video_path: str) -> str:
+    """Return a one-line reason a video can't be read.
+
+    _get_video_duration runs ffprobe with ``-v quiet``, so a failure there
+    carries no reason. This re-probes with errors on and keeps the line
+    ffprobe (or ffmpeg) reports against the file itself.
+    """
+    ffprobe_exe = shutil.which("ffprobe")
+    if ffprobe_exe:
+        cmd = [ffprobe_exe, "-v", "error", "-show_format", video_path]
+    else:
+        cmd = [_get_ffmpeg_executable(), "-hide_banner", "-i", video_path]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, check=False, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return str(e)
+    lines = [line.strip() for line in result.stderr.splitlines() if line.strip()]
+    prefix = f"{video_path}: "
+    for line in reversed(lines):
+        if line.startswith(prefix):
+            return line[len(prefix):]
+    return lines[-1] if lines else f"exit status {result.returncode}"
+
 def expected_chunk_spans(
     duration: float,
     chunk_duration: int = 30,

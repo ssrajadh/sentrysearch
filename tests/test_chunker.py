@@ -193,3 +193,58 @@ class TestScanDirectory:
 
     def test_empty_directory(self, tmp_path):
         assert scan_directory(str(tmp_path)) == []
+
+
+
+class TestTeslaEncryption:
+    """Tesla drops a -README_<lang>.txt beside clips it has encrypted."""
+
+    NOTE = (
+        "How do I view clips from the EncryptedClips folder?\n"
+        "Open a web browser and go to https://dashcam.tesla.com\n"
+    )
+
+    def test_detected_from_tesla_readme(self, tmp_path):
+        from sentrysearch.chunker import is_tesla_encrypted
+
+        clip = tmp_path / "2026-06-11_11-48-22-back.mp4"
+        clip.write_bytes(b"\x84\xd0\x0f\xc1 not an mp4")
+        (tmp_path / "-README_en.txt").write_text(self.NOTE)
+        assert is_tesla_encrypted(str(clip))
+
+    def test_detected_from_folder_name(self, tmp_path):
+        from sentrysearch.chunker import is_tesla_encrypted
+
+        folder = tmp_path / "TeslaCam" / "EncryptedClips" / "2026-06-11_11-59-15"
+        folder.mkdir(parents=True)
+        clip = folder / "a-front.mp4"
+        clip.write_bytes(b"x")
+        assert is_tesla_encrypted(str(clip))
+
+    def test_unrelated_readme_is_not_tesla(self, tmp_path):
+        from sentrysearch.chunker import is_tesla_encrypted
+
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"x")
+        (tmp_path / "README.txt").write_text("holiday footage, see the album")
+        assert not is_tesla_encrypted(str(clip))
+
+    def test_no_readme_is_not_tesla(self, tmp_path):
+        from sentrysearch.chunker import is_tesla_encrypted
+
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"x")
+        assert not is_tesla_encrypted(str(clip))
+
+
+class TestProbeError:
+    def test_reports_why_a_file_is_unreadable(self, tmp_path):
+        """_get_video_duration probes with -v quiet, so its error says
+        nothing. probe_error must surface ffprobe/ffmpeg's actual reason."""
+        from sentrysearch.chunker import probe_error
+
+        bad = tmp_path / "broken.mp4"
+        bad.write_bytes(b"\x00\x01 definitely not a video")
+        reason = probe_error(str(bad))
+        assert "Invalid data" in reason
+        assert str(bad) not in reason  # the path prefix is trimmed

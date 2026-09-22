@@ -1,6 +1,7 @@
 """Tests for sentrysearch.cli (Click CLI)."""
 
 import os
+import subprocess
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
@@ -248,6 +249,76 @@ class TestIndexCommand:
         assert dlq_instance.contains("failing_id")
         entry = dlq_instance.entries()["failing_id"]
         assert "out of memory" in entry["error"].lower()
+
+    def _two_videos_first_unreadable(self, tmp_path, readme=None):
+        d = tmp_path / "vids"
+        d.mkdir()
+        bad = d / "a_bad.mp4"
+        good = d / "b_good.mp4"
+        bad.write_bytes(b"not a video")
+        good.write_bytes(b"fake")
+        if readme:
+            (d / "-README_en.txt").write_text(readme)
+        chunk_path = tmp_path / "chunk_000.mp4"
+        chunk_path.write_bytes(b"chunk")
+
+        def chunk_video(path, **kw):
+            if path.endswith("a_bad.mp4"):
+                raise subprocess.CalledProcessError(1, ["ffprobe"])
+            return [{"chunk_path": str(chunk_path), "source_file": path,
+                     "start_time": 0.0, "end_time": 30.0}]
+
+        store = MagicMock()
+        store.has_chunk.return_value = False
+        store.make_chunk_id.side_effect = lambda p, s: f"{p}:{s}"
+        store.get_stats.return_value = {"total_chunks": 1, "unique_source_files": 1}
+        embedder = MagicMock()
+        embedder.embed_video_chunk.return_value = [0.0] * 768
+        return d, chunk_video, store, embedder
+
+    def test_index_continues_past_an_unreadable_file(self, runner, tmp_path):
+        """One file that won't open used to abort the whole run."""
+        d, chunk_video, store, embedder = self._two_videos_first_unreadable(tmp_path)
+        with patch("sentrysearch.store.SentryStore", return_value=store), \
+             patch("sentrysearch.embedder.get_embedder", return_value=embedder), \
+             patch("sentrysearch.chunker.chunk_video", side_effect=chunk_video), \
+             patch("sentrysearch.chunker.probe_error",
+                   return_value="Invalid data found when processing input"), \
+             patch("sentrysearch.chunker.is_still_frame_chunk", return_value=False):
+            result = runner.invoke(cli, ["index", str(d), "--no-preprocess"])
+
+        assert result.exit_code == 0, result.output
+        assert store.add_chunk.call_count == 1  # the good file still indexed
+        assert "a_bad.mp4 (unreadable: Invalid data found" in result.output
+        assert "1 unreadable skipped" in result.output
+
+    def test_index_explains_tesla_encrypted_clips(self, runner, tmp_path):
+        d, chunk_video, store, embedder = self._two_videos_first_unreadable(
+            tmp_path, readme="go to https://dashcam.tesla.com to decrypt")
+        with patch("sentrysearch.store.SentryStore", return_value=store), \
+             patch("sentrysearch.embedder.get_embedder", return_value=embedder), \
+             patch("sentrysearch.chunker.chunk_video", side_effect=chunk_video), \
+             patch("sentrysearch.chunker.is_still_frame_chunk", return_value=False):
+            result = runner.invoke(cli, ["index", str(d), "--no-preprocess"])
+
+        assert result.exit_code == 0, result.output
+        assert "a_bad.mp4 (Tesla-encrypted clip)" in result.output
+        assert "https://dashcam.tesla.com" in result.output
+        assert "Encrypt Dashcam Recordings" in result.output
+        assert store.add_chunk.call_count == 1
+
+    def test_index_explains_macos_folder_block(self, runner, tmp_path):
+        d, chunk_video, store, embedder = self._two_videos_first_unreadable(tmp_path)
+        with patch("sentrysearch.store.SentryStore", return_value=store), \
+             patch("sentrysearch.embedder.get_embedder", return_value=embedder), \
+             patch("sentrysearch.chunker.chunk_video", side_effect=chunk_video), \
+             patch("sentrysearch.chunker.probe_error",
+                   return_value="Operation not permitted"), \
+             patch("sentrysearch.chunker.is_still_frame_chunk", return_value=False):
+            result = runner.invoke(cli, ["index", str(d), "--no-preprocess"])
+
+        assert result.exit_code == 0, result.output
+        assert "Privacy & Security" in result.output
 
     def test_index_skips_dlq_chunks_by_default(self, runner, tmp_path):
         d = tmp_path / "vids"

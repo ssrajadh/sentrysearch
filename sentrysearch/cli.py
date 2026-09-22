@@ -436,7 +436,9 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
         chunk_video,
         expected_chunk_spans,
         is_still_frame_chunk,
+        is_tesla_encrypted,
         preprocess_chunk,
+        probe_error,
         scan_directory,
     )
     from .dlq import DeadLetterQueue
@@ -490,6 +492,8 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
         new_chunks = 0
         skipped_chunks = 0
         dlq_chunks = 0
+        encrypted_files: list[str] = []
+        unreadable_files: list[tuple[str, str]] = []
 
         if verbose:
             click.echo(f"[verbose] DB path: {store._client._identifier}", err=True)
@@ -521,7 +525,27 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
                 # Duration probe failed — let chunk_video surface the error
                 pass
 
-            chunks = chunk_video(abs_path, chunk_duration=chunk_duration, overlap=overlap)
+            try:
+                chunks = chunk_video(abs_path, chunk_duration=chunk_duration, overlap=overlap)
+            except Exception:
+                # One file that won't open shouldn't end a run over thousands.
+                # chunk_video probes before creating its temp dir, so there is
+                # nothing to clean up here.
+                if is_tesla_encrypted(abs_path):
+                    encrypted_files.append(abs_path)
+                    click.echo(
+                        f"Skipping ({file_idx}/{total_files}): {basename} "
+                        f"(Tesla-encrypted clip)"
+                    )
+                else:
+                    reason = probe_error(abs_path)
+                    unreadable_files.append((abs_path, reason))
+                    click.secho(
+                        f"Skipping ({file_idx}/{total_files}): {basename} "
+                        f"(unreadable: {reason})",
+                        fg="yellow",
+                    )
+                continue
             num_chunks = len(chunks)
             file_new_chunks = 0
 
@@ -634,6 +658,10 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
             parts.append(f"skipped {skipped_chunks} still")
         if dlq_chunks:
             parts.append(f"{dlq_chunks} failed → DLQ")
+        if encrypted_files:
+            parts.append(f"{len(encrypted_files)} Tesla-encrypted skipped")
+        if unreadable_files:
+            parts.append(f"{len(unreadable_files)} unreadable skipped")
         extra = f" ({', '.join(parts)})" if parts else ""
         click.echo(
             f"\nIndexed {new_chunks} new chunks from {new_files} files{extra}. "
@@ -646,6 +674,34 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
                 f"Retry with `sentrysearch index <dir> --retry-failed`.",
                 fg="yellow",
             )
+        if encrypted_files:
+            click.secho(
+                f"\n{len(encrypted_files)} clip(s) are Tesla-encrypted. Tesla encrypts "
+                "dashcam clips when \"Encrypt Dashcam Recordings\" is on, and they "
+                "can't be indexed until they're decrypted:\n"
+                "  - in a browser at https://dashcam.tesla.com, which decrypts "
+                "on your computer, or\n"
+                "  - in the car's Dashcam app: select the clips and tap the padlock.\n"
+                "Then index the decrypted files. To save future clips unencrypted: "
+                "Controls > Safety > Encrypt Dashcam Recordings.",
+                fg="yellow",
+            )
+        if unreadable_files:
+            click.secho(
+                f"\n{len(unreadable_files)} file(s) couldn't be read and were skipped:",
+                fg="yellow",
+            )
+            for path, reason in unreadable_files[:5]:
+                click.echo(f"  {path}: {reason}")
+            if len(unreadable_files) > 5:
+                click.echo(f"  ... and {len(unreadable_files) - 5} more")
+            if any("Operation not permitted" in r for _, r in unreadable_files):
+                click.echo(
+                    "  \"Operation not permitted\" means macOS is blocking access to "
+                    "that folder. Allow your terminal under System Settings > "
+                    "Privacy & Security > Files and Folders, or move the footage "
+                    "out of Downloads, Desktop or Documents."
+                )
 
     except Exception as e:
         _handle_error(e)
