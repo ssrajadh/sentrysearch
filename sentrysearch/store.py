@@ -43,6 +43,24 @@ def _collection_name(backend: str, model: str | None = None) -> str:
     return "dashcam_chunks_local"
 
 
+# Import names whose absence means a backend can't run at all, so there is no
+# point auto-selecting its index. Gemini and qwen-cloud need only core deps.
+_BACKEND_MODULES = {
+    "local": ("torch",),
+    "mlx": ("mlx", "mlx_vlm"),
+}
+
+
+def _backend_installed(backend: str) -> bool:
+    """Return True if *backend*'s optional dependencies are importable."""
+    import importlib.util
+
+    return all(
+        importlib.util.find_spec(mod) is not None
+        for mod in _BACKEND_MODULES.get(backend, ())
+    )
+
+
 def detect_index(
     db_path: str | Path | None = None,
     backend: str | None = None,
@@ -54,6 +72,12 @@ def detect_index(
     model-specific local collections, then the legacy ``dashcam_chunks_local``
     collection (treated as qwen8b), then MLX collections.
 
+    Without *backend*, an index whose backend isn't installed is passed over
+    in favor of the next one that is: an old ``local`` index shouldn't win
+    over an ``mlx`` one on a machine without torch. If no index is usable,
+    the first one found is still returned, so the caller's missing-dependency
+    error names the backend the data needs.
+
     Pass *backend* when the caller already knows which backend it wants and
     only needs the model. Without it, a caller asking for ``mlx`` while a
     ``local`` index also exists would be handed the local model name.
@@ -62,6 +86,17 @@ def detect_index(
     if not Path(db_path).exists():
         return None, None
     client = chromadb.PersistentClient(path=db_path)
+
+    first = None
+    for found in _indexes_with_data(client, backend):
+        if backend is not None or _backend_installed(found[0]):
+            return found
+        first = first or found
+    return first or (None, None)
+
+
+def _indexes_with_data(client, backend: str | None):
+    """Yield ``(backend, model)`` for each non-empty index, in priority order."""
     existing = {c.name for c in client.list_collections()}
 
     def want(name: str) -> bool:
@@ -71,7 +106,7 @@ def detect_index(
     if want("gemini") and "dashcam_chunks" in existing:
         col = client.get_collection("dashcam_chunks")
         if col.count() > 0:
-            return "gemini", None
+            yield "gemini", None
 
     # DashScope qwen-cloud (dashcam_chunks_qwen_cloud_<model>)
     for name in sorted(existing):
@@ -82,7 +117,7 @@ def detect_index(
                 model = meta.get("embedding_model")
                 if model is None:
                     model = name.removeprefix("dashcam_chunks_qwen_cloud_")
-                return "qwen-cloud", model
+                yield "qwen-cloud", model
 
     # Model-specific local collections (dashcam_chunks_local_<model>)
     for name in sorted(existing):
@@ -93,14 +128,14 @@ def detect_index(
                 model = meta.get("embedding_model")
                 if model is None:
                     model = name.removeprefix("dashcam_chunks_local_")
-                return "local", model
+                yield "local", model
 
     # Legacy local collection (no model suffix) — treat as qwen8b
     if want("local") and "dashcam_chunks_local" in existing:
         col = client.get_collection("dashcam_chunks_local")
         if col.count() > 0:
             meta = col.metadata or {}
-            return "local", meta.get("embedding_model", "qwen8b")
+            yield "local", meta.get("embedding_model", "qwen8b")
 
     # MLX last: an existing local index keeps its place as the default, so
     # trying the MLX backend once doesn't silently change what a bare
@@ -113,9 +148,7 @@ def detect_index(
                 model = meta.get("embedding_model")
                 if model is None:
                     model = name.removeprefix("dashcam_chunks_mlx_")
-                return "mlx", model
-
-    return None, None
+                yield "mlx", model
 
 
 def detect_backend(db_path: str | Path | None = None) -> str | None:
