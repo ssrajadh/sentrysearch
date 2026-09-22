@@ -1043,7 +1043,7 @@ def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
               help="Directory to save trimmed clips.")
 @click.option("--overlay/--no-overlay", default=False, show_default=True,
               help="Burn Tesla telemetry overlay onto trimmed clips.")
-@click.option("--backend", type=click.Choice(["gemini", "local"]), default=None,
+@click.option("--backend", type=click.Choice(["gemini", "local", "mlx"]), default=None,
               help="Embedding backend (auto-detected from index if omitted).")
 @click.option("--model", default=None,
               help="Model for local backend (default: auto-detect from index).")

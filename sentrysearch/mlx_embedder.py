@@ -173,8 +173,13 @@ class MLXEmbedder(BaseEmbedder):
                 "Face MLX repo id such as 'someone/Qwen3-VL-Embedding-8B-mlx'."
             )
         else:
-            from huggingface_hub import snapshot_download
-            print(f"Downloading {self._model_name}...", file=sys.stderr)
+            from huggingface_hub import snapshot_download, try_to_load_from_cache
+            cached = try_to_load_from_cache(self._model_name, "config.json")
+            if isinstance(cached, str) and os.path.exists(cached):
+                print(f"Loading {self._model_name}...", file=sys.stderr)
+            else:
+                print(f"Downloading {self._model_name} (this only happens once)...",
+                      file=sys.stderr)
             path = Path(snapshot_download(self._model_name))
 
         try:

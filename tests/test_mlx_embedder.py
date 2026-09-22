@@ -261,6 +261,20 @@ class TestRerankGuard:
             assert _get_search_reranker("local", "qwen2b", None) == "reranker"
 
 
+class TestHighlightsAcceptsMlx:
+    def test_highlights_backend_flag_accepts_mlx(self):
+        """highlights had its own hardcoded [gemini, local] list, so
+        --backend mlx was rejected there even though auto-detection
+        routed to it."""
+        from click.testing import CliRunner
+        from sentrysearch.cli import cli
+
+        result = CliRunner().invoke(cli, ["highlights", "--backend", "mlx", "--help"])
+        assert result.exit_code == 0, result.output
+        bad = CliRunner().invoke(cli, ["highlights", "--backend", "nope"])
+        assert "mlx" in bad.output
+
+
 class TestCollectionNaming:
     def test_mlx_gets_its_own_collection(self):
         from sentrysearch.store import _collection_name
