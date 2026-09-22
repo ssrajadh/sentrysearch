@@ -303,7 +303,7 @@ class TestIndexCommand:
 
         assert result.exit_code == 0, result.output
         assert "a_bad.mp4 (Tesla-encrypted clip)" in result.output
-        assert "https://dashcam.tesla.com" in result.output
+        assert "in a browser at https://dashcam.tesla.com" in result.output
         assert "Encrypt Dashcam Recordings" in result.output
         assert store.add_chunk.call_count == 1
 
