@@ -7,7 +7,7 @@ Semantic search over video footage. Type what you're looking for, get a trimmed 
 
 **Languages:** English · [简体中文](README.zh.md)
 
-**New:** [SentrySearch codebase walkthrough video](https://youtu.be/QkYUSlu_G9g)
+**New:** [MLX backend for Apple Silicon](#mlx-backend-apple-silicon): runs the local 2B model twice as fast in under half the memory, at the same accuracy · [Codebase walkthrough video](https://youtu.be/QkYUSlu_G9g)
 
 **The Pipeline:**
 1. SentrySearch (find an event in your footage)
@@ -77,7 +77,7 @@ uv tool install .
 > uv tool install --python 3.12 .
 > ```
 
-3. Set up your API key (or [use a local model instead](#local-backend-no-api-key-needed)) — **only needed for the default Gemini backend**; skip if you use `--backend local` or `--backend qwen-cloud` with `DASHSCOPE_API_KEY` in `.env`.
+3. Set up your API key (or [use a local model instead](#local-backend-no-api-key-needed)) — **only needed for the default Gemini backend**; skip if you use `--backend local`, `--backend mlx`, or `--backend qwen-cloud` with `DASHSCOPE_API_KEY` in `.env`.
 
 ```bash
 sentrysearch init
@@ -136,6 +136,7 @@ Options:
 - `--no-skip-still` — embed all chunks, even ones with no visual change
 - `--rpm 10` — cap requests per minute to the cloud API ([details below](#rate-limiting-free-tier-keys))
 - `--backend local` — use a local model instead of Gemini ([details below](#local-backend-no-api-key-needed))
+- `--backend mlx` — use the local model through MLX on Apple Silicon, faster and lighter than `local` ([details below](#mlx-backend-apple-silicon))
 
 ### Search
 
@@ -239,14 +240,14 @@ The model is **auto-detected from your hardware** — qwen8b for NVIDIA GPUs and
 | Hardware | Install command | Auto-detected model | Notes |
 |---|---|---|---|
 | **Apple Silicon, 24 GB+ RAM** | `uv tool install ".[local]"` | qwen8b | Full float16 via MPS |
-| **Apple Silicon, 16 GB RAM** | `uv tool install ".[local]"` | qwen2b | 8B won't fit; 2B uses ~6 GB |
-| **Apple Silicon, 8 GB RAM** | `uv tool install ".[local]"` | qwen2b | Tight — may swap under load; Gemini API recommended instead |
+| **Apple Silicon, 16 GB RAM** | `uv tool install ".[local]"` | qwen2b | 8B won't fit; 2B uses ~6 GB. The [MLX backend](#mlx-backend-apple-silicon) runs the same 2B in ~1.8 GB |
+| **Apple Silicon, 8 GB RAM** | `uv tool install ".[local]"` | qwen2b | Tight — may swap under load; Gemini API recommended instead. The [MLX backend](#mlx-backend-apple-silicon) needs far less memory but hasn't been tested on 8 GB |
 | **NVIDIA, 18 GB+ VRAM** | `uv tool install ".[local]"` | qwen8b | Full bf16 precision (CUDA wheels pulled automatically on Linux/Windows) |
 | **NVIDIA, 8–16 GB VRAM** | `uv tool install ".[local-quantized]"` | qwen8b | 4-bit quantization (~6–8 GB) |
 
 > **Won't work well:** Intel Macs and machines without a dedicated GPU. These fall back to CPU with float32 — too slow and memory-hungry for practical use. Use the **Gemini API backend** (the default) instead.
 
-> **Not sure?** On Mac, use `".[local]"`. On NVIDIA, use `".[local-quantized]"` — 4-bit quantization works on the widest range of NVIDIA hardware with minimal quality loss. (bitsandbytes requires CUDA and does not work on Mac/MPS.)
+> **Not sure?** On a Mac with less than 24 GB, use the [MLX backend](#mlx-backend-apple-silicon) (`".[mlx]"`): same accuracy as `".[local]"` at half the time and memory, though it doesn't support `--rerank` yet. On a larger Mac, use `".[local]"`. On NVIDIA, use `".[local-quantized]"` — 4-bit quantization works on the widest range of NVIDIA hardware with minimal quality loss. (bitsandbytes requires CUDA and does not work on Mac/MPS.)
 
 **Python version:** PyTorch wheels lag behind new Python releases, so the local backend requires Python 3.11 or 3.12. If your default Python is 3.13+, install a managed 3.12 and pin the tool install to it:
 
@@ -307,7 +308,7 @@ sentrysearch index /path/to/footage --backend mlx
 sentrysearch search "your query" --backend mlx
 ```
 
-No `--model` needed. It defaults to a 4-bit 2B build (`arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit`, ~1.8 GB) and downloads it on first use. Pass `--model` with any MLX repo id or a local converted model directory to override.
+No `--model` needed. It defaults to a 4-bit 2B build (`arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit`, ~1.8 GB) and downloads it on first use. To use a different model, pass `--backend mlx --model` with an MLX repo id or a local converted model directory. Keep `--backend mlx`: `--model` on its own selects the PyTorch `local` backend.
 
 Measured against the PyTorch `local` backend on the same 112 clips and 34 queries, running the same 2B model:
 
@@ -320,7 +321,7 @@ The two are level on accuracy — the gap is inside the noise of 34 queries — 
 
 **Lower your threshold.** Similarity scores on this backend run well below the `--threshold 0.41` default, and correct matches in testing landed between 0.10 and 0.30. Start around `--threshold 0.1` and tighten from there. The two local backends are not calibrated alike, so a threshold tuned on one will misbehave on the other.
 
-**No 8B option.** An 8B build ties the 2B at best and needs roughly three times the time and memory to do it, so no 8B alias ships here. You can still point `--model` at your own conversion.
+**No 8B option.** An 8B build ties the 2B at best and needs roughly three times the time and memory to do it, so no 8B alias ships here. You can still point `--backend mlx --model` at your own conversion.
 
 **No reranking yet.** `--rerank` is rejected on this backend rather than silently falling back to the Gemini reranker, which would send your results to an API after you chose a local backend. Use `--backend local` for the PyTorch reranker.
 
