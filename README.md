@@ -7,7 +7,7 @@ Semantic search over video footage. Type what you're looking for, get a trimmed 
 
 **Languages:** English · [简体中文](README.zh.md)
 
-**New:** [MLX backend for Apple Silicon](#mlx-backend-apple-silicon): runs the local 2B model twice as fast in under half the memory, at the same accuracy · [Codebase walkthrough video](https://youtu.be/QkYUSlu_G9g)
+**New:** [MLX backend for Apple Silicon](#mlx-backend-apple-silicon): runs the local 2B model twice as fast in under half the memory, at the same accuracy
 
 **The Pipeline:**
 1. SentrySearch (find an event in your footage)
