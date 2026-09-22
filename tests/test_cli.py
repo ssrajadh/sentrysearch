@@ -716,6 +716,43 @@ class TestSearchLocalFlags:
             mock_get.assert_called_with("local", model="qwen2b", quantize=None, rpm=None)
             MockStore.assert_called_once_with(backend="local", model="qwen2b")
 
+    def test_search_explicit_mlx_ignores_local_index(self, runner):
+        """With both a local and an mlx index, --backend mlx must resolve the
+        mlx model, not the local one that detection finds first."""
+        mlx_ref = "/m/Qwen3-VL-Embedding-2B-mlx-4bit"
+
+        def both_indexes(db_path=None, backend=None):
+            if backend == "mlx":
+                return ("mlx", mlx_ref)
+            if backend in (None, "local"):
+                return ("local", "qwen2b")
+            return (None, None)
+
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()) as mock_get, \
+             patch("sentrysearch.store.detect_index", side_effect=both_indexes), \
+             patch("sentrysearch.search.search_footage", return_value=[]):
+            inst = MagicMock()
+            inst.get_stats.return_value = {"total_chunks": 5}
+            MockStore.return_value = inst
+            result = runner.invoke(cli, ["search", "test query", "--backend", "mlx"])
+            assert result.exit_code == 0, result.output
+            MockStore.assert_called_once_with(backend="mlx", model=mlx_ref)
+            mock_get.assert_called_with("mlx", model=mlx_ref, quantize=None, rpm=None)
+
+    def test_mlx_model_suggestion_keeps_the_backend_flag(self, runner):
+        """--model alone implies --backend local, so the hint must say
+        --backend mlx or following it would switch backends."""
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.store.detect_index", return_value=("mlx", "/m/real")):
+            inst = MagicMock()
+            inst.get_stats.return_value = {"total_chunks": 0}
+            MockStore.return_value = inst
+            result = runner.invoke(cli, [
+                "search", "red car", "--backend", "mlx", "--model", "/m/typo",
+            ])
+            assert "--backend mlx --model /m/real" in result.output
+
     def test_search_wrong_model_shows_suggestion(self, runner):
         with patch("sentrysearch.store.SentryStore") as MockStore, \
              patch("sentrysearch.store.detect_index", return_value=("local", "qwen2b")):

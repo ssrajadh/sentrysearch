@@ -295,6 +295,64 @@ class TestDetectIndex:
         })
         assert detect_index(tmp_path / "db") == ("local", "qwen2b")
 
+    def test_detects_mlx_with_full_model_ref(self, tmp_path):
+        from sentrysearch.store import SentryStore, detect_index
+
+        ref = "/models/Qwen3-VL-Embedding-2B-mlx-4bit"
+        store = SentryStore(db_path=tmp_path / "db", backend="mlx", model=ref)
+        store.add_chunk("c1", _make_embedding(), {
+            "source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0,
+        })
+        # the full reference comes back from metadata, not the slugged name,
+        # so a later search can reload the same model
+        assert detect_index(tmp_path / "db") == ("mlx", ref)
+
+    def test_local_wins_over_mlx(self, tmp_path):
+        """Indexing once with MLX must not change what a bare search hits
+        for someone who already has a local index."""
+        from sentrysearch.store import SentryStore, detect_index
+
+        db = tmp_path / "db"
+        for backend, model in (("mlx", "/m/x"), ("local", "qwen2b")):
+            SentryStore(db_path=db, backend=backend, model=model).add_chunk(
+                "c1", _make_embedding(),
+                {"source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0})
+        assert detect_index(db) == ("local", "qwen2b")
+
+    def test_legacy_local_wins_over_mlx(self, tmp_path):
+        from sentrysearch.store import SentryStore, detect_index
+
+        db = tmp_path / "db"
+        for backend, model in (("mlx", "/m/x"), ("local", None)):
+            SentryStore(db_path=db, backend=backend, model=model).add_chunk(
+                "c1", _make_embedding(),
+                {"source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0})
+        assert detect_index(db)[0] == "local"
+
+    def test_scoped_detection_finds_mlx_behind_local(self, tmp_path):
+        """A caller that asked for mlx must get the mlx model, not the local
+        one that happens to be checked first."""
+        from sentrysearch.store import SentryStore, detect_index
+
+        db = tmp_path / "db"
+        for backend, model in (("local", "qwen2b"), ("mlx", "/m/x")):
+            SentryStore(db_path=db, backend=backend, model=model).add_chunk(
+                "c1", _make_embedding(),
+                {"source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0})
+        assert detect_index(db, backend="mlx") == ("mlx", "/m/x")
+        assert detect_index(db, backend="local") == ("local", "qwen2b")
+
+    def test_scoped_detection_skips_other_backends(self, tmp_path):
+        from sentrysearch.store import SentryStore, detect_index
+
+        db = tmp_path / "db"
+        SentryStore(db_path=db, backend="gemini").add_chunk(
+            "c1", _make_embedding(),
+            {"source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0})
+        assert detect_index(db) == ("gemini", None)
+        assert detect_index(db, backend="local") == (None, None)
+        assert detect_index(db, backend="mlx") == (None, None)
+
     def test_legacy_local_treated_as_qwen8b(self, tmp_path):
         from sentrysearch.store import SentryStore, detect_index
 

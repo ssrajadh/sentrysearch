@@ -739,25 +739,31 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
             if model is None:
                 model = detected_model
         elif backend in ("local", "mlx") and model is None:
-            _, detected_model = detect_index()
+            _, detected_model = detect_index(backend=backend)
             model = detected_model
         elif backend == "qwen-cloud":
             if dashscope_model is not None:
                 model = dashscope_model
             elif model is None:
-                _, detected_model = detect_index()
+                _, detected_model = detect_index(backend=backend)
                 model = detected_model or default_dashscope_embedding_model()
 
         store = SentryStore(backend=backend, model=model)
 
         if store.get_stats()["total_chunks"] == 0:
-            # Check if data exists under a different model
-            det_backend, det_model = detect_index()
+            # Prefer data under the requested backend (a different model),
+            # then fall back to whatever else is indexed.
+            det_backend, det_model = detect_index(backend=backend)
+            if det_backend is None:
+                det_backend, det_model = detect_index()
             if det_backend == backend and det_model and det_model != model:
+                # --model on its own implies --backend local, so an MLX
+                # suggestion has to name its backend or it switches backends.
+                backend_flag = " --backend mlx" if backend == "mlx" else ""
                 click.echo(
                     f"No footage indexed with the {model} model. "
                     f"Your index uses {det_model}.\n\n"
-                    f"Try: sentrysearch search \"{query}\" --model {det_model}"
+                    f"Try: sentrysearch search \"{query}\"{backend_flag} --model {det_model}"
                 )
             elif det_backend and det_backend != backend:
                 click.echo(
@@ -973,12 +979,12 @@ def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
             if model is None:
                 model = detected_model
         elif backend in ("local", "mlx") and model is None:
-            _, model = detect_index()
+            _, model = detect_index(backend=backend)
         elif backend == "qwen-cloud":
             if dashscope_model is not None:
                 model = dashscope_model
             elif model is None:
-                _, detected_model = detect_index()
+                _, detected_model = detect_index(backend=backend)
                 model = detected_model or default_dashscope_embedding_model()
 
         store = SentryStore(backend=backend, model=model)
@@ -1082,7 +1088,7 @@ def highlights(count, method, neighbors, against, against_mode, dedupe_threshold
             if model is None:
                 model = detected_model
         elif backend in ("local", "mlx") and model is None:
-            _, model = detect_index()
+            _, model = detect_index(backend=backend)
 
         store = SentryStore(backend=backend, model=model)
         if store.get_stats()["total_chunks"] == 0:
@@ -1226,12 +1232,12 @@ def shell(backend, model, dashscope_model, quantize, n_results, threshold, verbo
             if model is None:
                 model = detected_model
         elif backend in ("local", "mlx") and model is None:
-            _, model = detect_index()
+            _, model = detect_index(backend=backend)
         elif backend == "qwen-cloud":
             if dashscope_model is not None:
                 model = dashscope_model
             elif model is None:
-                _, detected_model = detect_index()
+                _, detected_model = detect_index(backend=backend)
                 model = detected_model or default_dashscope_embedding_model()
 
         store = SentryStore(backend=backend, model=model)
@@ -1413,9 +1419,9 @@ def reset(backend, model):
         if model is None:
             model = detected_model
     elif backend in ("local", "mlx") and model is None:
-        _, model = detect_index()
+        _, model = detect_index(backend=backend)
     elif backend == "qwen-cloud" and model is None:
-        _, model = detect_index()
+        _, model = detect_index(backend=backend)
         model = model or default_dashscope_embedding_model()
 
     store = SentryStore(backend=backend, model=model)
@@ -1456,9 +1462,9 @@ def remove(files, backend, model):
         if model is None:
             model = detected_model
     elif backend in ("local", "mlx") and model is None:
-        _, model = detect_index()
+        _, model = detect_index(backend=backend)
     elif backend == "qwen-cloud" and model is None:
-        _, model = detect_index()
+        _, model = detect_index(backend=backend)
         model = model or default_dashscope_embedding_model()
 
     store = SentryStore(backend=backend, model=model)

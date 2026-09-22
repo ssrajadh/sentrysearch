@@ -324,7 +324,7 @@ The two are level on accuracy — the gap is inside the noise of 34 queries — 
 
 **No reranking yet.** `--rerank` is rejected on this backend rather than silently falling back to the Gemini reranker, which would send your results to an API after you chose a local backend. Use `--backend local` for the PyTorch reranker.
 
-Embeddings from this backend get their own index, separate from `local`, so the two never mix. Reindex if you switch.
+Embeddings from this backend get their own index, separate from `local`, so the two never mix. If you have both, a search without `--backend` uses the `local` index; pass `--backend mlx`, or clear the old one with `sentrysearch reset --backend local` once you've switched.
 
 
 ### Tesla Metadata Overlay

@@ -43,13 +43,20 @@ def _collection_name(backend: str, model: str | None = None) -> str:
     return "dashcam_chunks_local"
 
 
-def detect_index(db_path: str | Path | None = None) -> tuple[str | None, str | None]:
+def detect_index(
+    db_path: str | Path | None = None,
+    backend: str | None = None,
+) -> tuple[str | None, str | None]:
     """Return ``(backend, model)`` for the first index with data.
 
     Returns ``(None, None)`` when no index contains data.
     Checks gemini first, then DashScope ``qwen-cloud`` collections, then
     model-specific local collections, then the legacy ``dashcam_chunks_local``
-    collection (treated as qwen8b).
+    collection (treated as qwen8b), then MLX collections.
+
+    Pass *backend* when the caller already knows which backend it wants and
+    only needs the model. Without it, a caller asking for ``mlx`` while a
+    ``local`` index also exists would be handed the local model name.
     """
     db_path = str(db_path or DEFAULT_DB_PATH)
     if not Path(db_path).exists():
@@ -57,15 +64,18 @@ def detect_index(db_path: str | Path | None = None) -> tuple[str | None, str | N
     client = chromadb.PersistentClient(path=db_path)
     existing = {c.name for c in client.list_collections()}
 
+    def want(name: str) -> bool:
+        return backend is None or backend == name
+
     # Gemini first (default / legacy)
-    if "dashcam_chunks" in existing:
+    if want("gemini") and "dashcam_chunks" in existing:
         col = client.get_collection("dashcam_chunks")
         if col.count() > 0:
             return "gemini", None
 
     # DashScope qwen-cloud (dashcam_chunks_qwen_cloud_<model>)
     for name in sorted(existing):
-        if name.startswith("dashcam_chunks_qwen_cloud_"):
+        if want("qwen-cloud") and name.startswith("dashcam_chunks_qwen_cloud_"):
             col = client.get_collection(name)
             if col.count() > 0:
                 meta = col.metadata or {}
@@ -74,20 +84,9 @@ def detect_index(db_path: str | Path | None = None) -> tuple[str | None, str | N
                     model = name.removeprefix("dashcam_chunks_qwen_cloud_")
                 return "qwen-cloud", model
 
-    # MLX collections (dashcam_chunks_mlx_<model>)
-    for name in sorted(existing):
-        if name.startswith("dashcam_chunks_mlx_"):
-            col = client.get_collection(name)
-            if col.count() > 0:
-                meta = col.metadata or {}
-                model = meta.get("embedding_model")
-                if model is None:
-                    model = name.removeprefix("dashcam_chunks_mlx_")
-                return "mlx", model
-
     # Model-specific local collections (dashcam_chunks_local_<model>)
     for name in sorted(existing):
-        if name.startswith("dashcam_chunks_local_"):
+        if want("local") and name.startswith("dashcam_chunks_local_"):
             col = client.get_collection(name)
             if col.count() > 0:
                 meta = col.metadata or {}
@@ -97,11 +96,24 @@ def detect_index(db_path: str | Path | None = None) -> tuple[str | None, str | N
                 return "local", model
 
     # Legacy local collection (no model suffix) — treat as qwen8b
-    if "dashcam_chunks_local" in existing:
+    if want("local") and "dashcam_chunks_local" in existing:
         col = client.get_collection("dashcam_chunks_local")
         if col.count() > 0:
             meta = col.metadata or {}
             return "local", meta.get("embedding_model", "qwen8b")
+
+    # MLX last: an existing local index keeps its place as the default, so
+    # trying the MLX backend once doesn't silently change what a bare
+    # `sentrysearch search` returns.
+    for name in sorted(existing):
+        if want("mlx") and name.startswith("dashcam_chunks_mlx_"):
+            col = client.get_collection(name)
+            if col.count() > 0:
+                meta = col.metadata or {}
+                model = meta.get("embedding_model")
+                if model is None:
+                    model = name.removeprefix("dashcam_chunks_mlx_")
+                return "mlx", model
 
     return None, None
 
