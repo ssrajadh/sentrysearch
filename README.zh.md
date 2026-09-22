@@ -7,11 +7,6 @@
 > [!IMPORTANT]
 > **官方来源：** [github.com/ssrajadh/sentrysearch](https://github.com/ssrajadh/sentrysearch) 是 SentrySearch 唯一的官方仓库。其他转载或镜像本项目的网站均与维护者无关，也未获得授权，请始终从本仓库下载。
 
-**工作流程：**
-1. **SentrySearch**：在素材里用自然语言或图片找到事件对应片段。
-2. **[SentryMerge](https://github.com/ssrajadh/sentrymerge)**：根据搜索结果，把多路摄像头画面自动剪成一条跟随主体的跨镜视频。
-3. **[SentryBlur](https://github.com/ssrajadh/sentryblur)**：对敏感区域做本地打码。
-
 **新功能：** [`sentrysearch highlights`](#亮点-highlights)：在还不知道具体搜什么时，按与索引中其他片段的偏离程度对已建索引的切片排序，并自动裁剪导出，适合快速浏览新导入的一批素材。
 
 [<video src="https://github.com/ssrajadh/sentrysearch/raw/main/docs/demo.mp4" controls width="100%"></video>](https://github.com/user-attachments/assets/baf98fad-080b-48e1-97f5-a2db2cbd53f5)

@@ -9,11 +9,6 @@ Semantic search over video footage. Type what you're looking for, get a trimmed 
 
 **New:** [MLX backend for Apple Silicon](#mlx-backend-apple-silicon): runs the local 2B model twice as fast in under half the memory, at the same accuracy
 
-**The Pipeline:**
-1. SentrySearch (find an event in your footage)
-2. [SentryMerge](https://github.com/ssrajadh/sentrymerge) (auto-cut the multi-cam footage into one video that follows the subject across cameras)
-3. [SentryBlur](https://github.com/ssrajadh/sentryblur) (auto-redact sensitive information)
-
 [<video src="https://github.com/ssrajadh/sentrysearch/raw/main/docs/demo.mp4" controls width="100%"></video>](https://github.com/user-attachments/assets/baf98fad-080b-48e1-97f5-a2db2cbd53f5)
 
 ## Table of Contents
