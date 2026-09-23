@@ -1503,3 +1503,42 @@ class TestRpmFlag:
         result = runner.invoke(cli, [command, "--help"])
         assert result.exit_code == 0
         assert "--rpm" in result.output
+
+
+class TestBackendThreshold:
+    """Scores aren't comparable across embedding models, so the default
+    low-confidence cutoff depends on the backend."""
+
+    def _search(self, runner, backend, score, *extra):
+        hit = [{"source_file": "/v.mp4", "start_time": 0.0, "end_time": 30.0,
+                "similarity_score": score}]
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()), \
+             patch("sentrysearch.store.detect_index", return_value=(backend, "m")), \
+             patch("sentrysearch.search.search_footage", return_value=hit):
+            MockStore.return_value.get_stats.return_value = {"total_chunks": 5}
+            return runner.invoke(cli, ["search", "q", "--no-trim", *extra])
+
+    def test_mlx_default_accepts_a_score_that_gemini_flags(self, runner):
+        assert "low confidence" not in self._search(runner, "mlx", 0.38).output
+        assert "low confidence" in self._search(runner, "gemini", 0.38).output
+
+    def test_mlx_default_still_flags_unrelated_queries(self, runner):
+        assert "low confidence" in self._search(runner, "mlx", 0.30).output
+
+    def test_explicit_threshold_wins(self, runner):
+        result = self._search(runner, "mlx", 0.38, "--threshold", "0.5")
+        assert "low confidence" in result.output
+
+    def test_resolve_threshold(self):
+        from sentrysearch.cli import _resolve_threshold
+
+        assert _resolve_threshold(None, "mlx") == 0.35
+        assert _resolve_threshold(None, "gemini") == 0.41
+        assert _resolve_threshold(None, "local") == 0.41
+        assert _resolve_threshold(0.2, "mlx") == 0.2
+        assert _resolve_threshold(0.0, "gemini") == 0.0
+
+    def test_help_documents_both_defaults(self, runner):
+        out = runner.invoke(cli, ["search", "--help"]).output
+        assert "0.41" in out and "0.35" in out

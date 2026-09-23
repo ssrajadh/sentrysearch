@@ -144,7 +144,7 @@ $ sentrysearch search "red truck running a stop sign"
 Saved clip: ./match_front_2024-01-15_14-30_02m15s-02m45s.mp4
 ```
 
-If the best result's similarity score is below the confidence threshold (default 0.41), you'll be prompted before trimming:
+If the best result's similarity score is below the confidence threshold (default 0.41, or 0.35 on `--backend mlx`), you'll be prompted before trimming:
 
 ```
 No confident match found (best score: 0.28). Show results anyway? [y/N]:
@@ -314,7 +314,7 @@ Measured against the PyTorch `local` backend on the same 112 clips and 34 querie
 
 The two are level on accuracy — the gap is inside the noise of 34 queries — so 4-bit quantization costs nothing here while halving both the time and the memory.
 
-**Lower your threshold.** Similarity scores on this backend run well below the `--threshold 0.41` default, and correct matches in testing landed between 0.10 and 0.30. Start around `--threshold 0.1` and tighten from there. The two local backends are not calibrated alike, so a threshold tuned on one will misbehave on the other.
+**The confidence threshold defaults to 0.35 on this backend**, not 0.41, because its scores run lower. On dashcam footage, everyday queries ("a truck", "driving at night") scored 0.37–0.59 with the right clip on top, while unrelated ones ("a plate of sushi") scored 0.17–0.33. Specific queries score lower, and correct matches came in as low as 0.28, so a good result can still be flagged as low confidence. The results are still shown; lower `--threshold` if that happens often for your queries. The local backends are not calibrated alike, so a threshold tuned on one will misbehave on the other.
 
 **No 8B option.** An 8B build ties the 2B at best and needs roughly three times the time and memory to do it, so no 8B alias ships here. You can still point `--backend mlx --model` at your own conversion.
 

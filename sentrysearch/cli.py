@@ -18,6 +18,23 @@ from .qwen_cloud_embedder import default_dashscope_embedding_model
 
 _BACKEND_CHOICES = ["gemini", "local", "mlx", "qwen-cloud"]
 
+# Similarity scores aren't comparable across embedding models, so the
+# low-confidence cutoff is per backend. On an MLX 2B dashcam index, everyday
+# queries scored 0.37-0.59 and unrelated ones 0.17-0.33, so 0.35 flags every
+# unrelated query while 0.41 also flagged a third of the everyday ones.
+# Specific queries score lower (correct matches from 0.28), so no cutoff
+# separates cleanly; 0.35 flags fewer good results than 0.41 and no fewer
+# unrelated ones.
+_DEFAULT_THRESHOLD = 0.41
+_BACKEND_THRESHOLDS = {"mlx": 0.35}
+
+
+def _resolve_threshold(threshold: float | None, backend: str) -> float:
+    """Return *threshold* if the user gave one, else the backend's default."""
+    if threshold is not None:
+        return threshold
+    return _BACKEND_THRESHOLDS.get(backend, _DEFAULT_THRESHOLD)
+
 _MODEL_FLAG_HELP_SUFFIX = (
     " Mutually exclusive with --dashscope-model (do not pass both)."
 )
@@ -742,8 +759,9 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
               help="Auto-trim the top result.")
 @click.option("--save-top", default=None, type=click.IntRange(min=1),
               help="Save the top N matching clips instead of just the #1 result (e.g. --save-top 3).")
-@click.option("--threshold", default=0.41, show_default=True, type=float,
-              help="Minimum similarity score to consider a confident match.")
+@click.option("--threshold", default=None, type=float,
+              help="Minimum similarity score to consider a confident match. "
+                   "[default: 0.41; 0.35 for --backend mlx]")
 @click.option("--overlay/--no-overlay", default=False, show_default=True,
               help="Burn Tesla telemetry overlay (speed, GPS, turn signals) onto trimmed clip.")
 @click.option("--backend", type=click.Choice(_BACKEND_CHOICES), default=None,
@@ -844,6 +862,7 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
         # Ensure we fetch enough results for --save-top
         if save_top is not None and save_top > n_results:
             n_results = save_top
+        threshold = _resolve_threshold(threshold, backend)
 
         if verbose:
             click.echo(f"  [verbose] backend={backend}, similarity threshold: {threshold}", err=True)
@@ -989,8 +1008,9 @@ def _present_results(
               help="Trim and save the top result as a clip.")
 @click.option("--save-top", default=None, type=click.IntRange(min=1),
               help="Save the top N matches as separate clips.")
-@click.option("--threshold", default=0.41, show_default=True, type=float,
-              help="Minimum similarity score to consider a confident match.")
+@click.option("--threshold", default=None, type=float,
+              help="Minimum similarity score to consider a confident match. "
+                   "[default: 0.41; 0.35 for --backend mlx]")
 @click.option("--overlay/--no-overlay", default=False, show_default=True,
               help="Apply Tesla telemetry overlay to saved clips.")
 @click.option("--backend", type=click.Choice(_BACKEND_CHOICES), default=None,
@@ -1056,6 +1076,7 @@ def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
 
         if save_top is not None and save_top > n_results:
             n_results = save_top
+        threshold = _resolve_threshold(threshold, backend)
 
         if verbose:
             click.echo(
@@ -1249,8 +1270,9 @@ def _print_shell_results(results, threshold):
               help="Enable/disable 4-bit quantization for local backend.")
 @click.option("-n", "--results", "n_results", default=5, show_default=True,
               help="Number of results per query.")
-@click.option("--threshold", default=0.41, show_default=True, type=float,
-              help="Minimum similarity score to consider a confident match.")
+@click.option("--threshold", default=None, type=float,
+              help="Minimum similarity score to consider a confident match. "
+                   "[default: 0.41; 0.35 for --backend mlx]")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
 @click.option("--rpm", default=None, type=click.IntRange(min=1),
               help="Max requests/minute to the cloud API (gemini, qwen-cloud). "
@@ -1296,6 +1318,7 @@ def shell(backend, model, dashscope_model, quantize, n_results, threshold, verbo
                 _, detected_model = detect_index(backend=backend)
                 model = detected_model or default_dashscope_embedding_model()
 
+        threshold = _resolve_threshold(threshold, backend)
         store = SentryStore(backend=backend, model=model)
         stats = store.get_stats()
         if stats["total_chunks"] == 0:

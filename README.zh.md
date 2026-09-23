@@ -142,7 +142,7 @@ $ sentrysearch search "red truck running a stop sign"
 Saved clip: ./match_front_2024-01-15_14-30_02m15s-02m45s.mp4
 ```
 
-若最佳结果的相似度低于默认置信阈值（0.41），裁剪前会先询问：
+若最佳结果的相似度低于默认置信阈值（0.41；`--backend mlx` 时为 0.35），裁剪前会先询问：
 
 ```
 No confident match found (best score: 0.28). Show results anyway? [y/N]:
