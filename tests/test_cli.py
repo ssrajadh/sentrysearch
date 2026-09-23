@@ -1542,3 +1542,26 @@ class TestBackendThreshold:
     def test_help_documents_both_defaults(self, runner):
         out = runner.invoke(cli, ["search", "--help"]).output
         assert "0.41" in out and "0.35" in out
+
+
+class TestSearchDedupeDefault:
+    def _run(self, runner, *args):
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()), \
+             patch("sentrysearch.store.detect_index", return_value=("gemini", None)), \
+             patch("sentrysearch.search.search_footage", return_value=[]) as mock_search:
+            MockStore.return_value.get_stats.return_value = {"total_chunks": 5}
+            result = runner.invoke(cli, ["search", "q", "--no-trim", *args])
+        assert result.exit_code == 0, result.output
+        return mock_search.call_args.kwargs["dedupe_threshold"]
+
+    def test_search_dedupes_by_default(self, runner):
+        assert self._run(runner) == 0.9
+
+    def test_search_dedupe_can_be_turned_off(self, runner):
+        assert self._run(runner, "--dedupe", "1") == 1.0
+
+    def test_img_and_shell_share_the_default(self, runner):
+        for cmd in ("img", "shell"):
+            out = runner.invoke(cli, [cmd, "--help"]).output
+            assert "--dedupe" in out and "0.9" in out

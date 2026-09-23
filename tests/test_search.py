@@ -126,3 +126,37 @@ class TestSearchDedupe:
         results = search_footage("q", tmp_store, n_results=5,
                                  dedupe_threshold=0.9)
         assert len(results) == 1
+
+    def test_dedupe_still_fills_n_results(self, tmp_store, mock_embed_query):
+        """Dedupe used to run on only the top n hits, so three near-copies
+        of one moment turned -n 3 into a single result."""
+        base = mock_embed_query
+        for i in range(3):
+            dup = base.copy()
+            dup[0] += 0.001 * (i + 1)
+            norm = math.sqrt(sum(x * x for x in dup))
+            tmp_store.add_chunk(f"d{i}", [x / norm for x in dup], {
+                "source_file": f"dup{i}.mp4", "start_time": 0.0, "end_time": 30.0,
+            })
+        for i in range(3):  # mutually orthogonal, so none dedupes another
+            other = [0.0] * len(base)
+            other[i + 1] = 1.0
+            tmp_store.add_chunk(f"o{i}", other, {
+                "source_file": f"other{i}.mp4", "start_time": 0.0, "end_time": 30.0,
+            })
+
+        results = search_footage("q", tmp_store, n_results=3,
+                                 dedupe_threshold=0.9)
+        assert len(results) == 3
+        assert sum(r["source_file"].startswith("dup") for r in results) == 1
+
+    def test_dedupe_1_keeps_exact_duplicates(self, tmp_store, mock_embed_query):
+        """Float error can put the cosine of identical vectors a hair
+        above 1.0; --dedupe 1 must still mean 'off'."""
+        for i in range(2):
+            tmp_store.add_chunk(f"c{i}", mock_embed_query, {
+                "source_file": f"v{i}.mp4", "start_time": 0.0, "end_time": 30.0,
+            })
+        results = search_footage("q", tmp_store, n_results=5,
+                                 dedupe_threshold=1.0)
+        assert len(results) == 2

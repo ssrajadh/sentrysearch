@@ -776,9 +776,10 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
                    + _DASHSCOPE_MODEL_FLAG_HELP_SUFFIX)
 @click.option("--quantize/--no-quantize", default=None,
               help="Enable/disable 4-bit quantization for local backend (default: auto-detect).")
-@click.option("--dedupe", "dedupe_threshold", default=None, type=float,
+@click.option("--dedupe", "dedupe_threshold", default=0.9, show_default=True,
+              type=float,
               help="Drop results whose cosine similarity to a higher-ranked "
-                   "result exceeds this (e.g. 0.9).")
+                   "result exceeds this. Pass 1 to keep near-duplicates.")
 @click.option("--rerank", is_flag=True,
               help="Use a VLM to rerank candidates before trimming.")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
@@ -1023,9 +1024,10 @@ def _present_results(
                    + _DASHSCOPE_MODEL_FLAG_HELP_SUFFIX)
 @click.option("--quantize/--no-quantize", default=None,
               help="Enable/disable 4-bit quantization for local backend.")
-@click.option("--dedupe", "dedupe_threshold", default=None, type=float,
+@click.option("--dedupe", "dedupe_threshold", default=0.9, show_default=True,
+              type=float,
               help="Drop results whose cosine similarity to a higher-ranked "
-                   "result exceeds this (e.g. 0.9).")
+                   "result exceeds this. Pass 1 to keep near-duplicates.")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
 @click.option("--rpm", default=None, type=click.IntRange(min=1),
               help="Max requests/minute to the cloud API (gemini, qwen-cloud). "
@@ -1273,12 +1275,17 @@ def _print_shell_results(results, threshold):
 @click.option("--threshold", default=None, type=float,
               help="Minimum similarity score to consider a confident match. "
                    "[default: 0.41; 0.35 for --backend mlx]")
+@click.option("--dedupe", "dedupe_threshold", default=0.9, show_default=True,
+              type=float,
+              help="Drop results whose cosine similarity to a higher-ranked "
+                   "result exceeds this. Pass 1 to keep near-duplicates.")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
 @click.option("--rpm", default=None, type=click.IntRange(min=1),
               help="Max requests/minute to the cloud API (gemini, qwen-cloud). "
                    "Lower this if you hit rate limits on a free-tier key. "
                    "Overrides GEMINI_RPM / DASHSCOPE_RPM. Ignored by --backend local.")
-def shell(backend, model, dashscope_model, quantize, n_results, threshold, verbose, rpm):
+def shell(backend, model, dashscope_model, quantize, n_results, threshold,
+          dedupe_threshold, verbose, rpm):
     """Start an interactive search session that keeps the model loaded.
 
     Useful for running multiple queries back-to-back with the local
@@ -1390,6 +1397,7 @@ def shell(backend, model, dashscope_model, quantize, n_results, threshold, verbo
             try:
                 results = search_footage(
                     query, store, n_results=n_results, verbose=verbose,
+                    dedupe_threshold=dedupe_threshold,
                 )
             except Exception as e:
                 click.secho(f"Error: {e}", fg="red")

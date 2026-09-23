@@ -8,6 +8,9 @@ from .embedder import embed_image, embed_query
 from .highlights import _dedupe_indices, _normalize
 from .store import SentryStore
 
+# How many candidates per requested result to fetch when deduping.
+_DEDUPE_POOL_FACTOR = 4
+
 
 def _search_with_embedding(
     embedding: list[float],
@@ -15,8 +18,12 @@ def _search_with_embedding(
     n_results: int,
     dedupe_threshold: float | None = None,
 ) -> list[dict]:
+    if dedupe_threshold is not None and dedupe_threshold >= 1:
+        dedupe_threshold = None  # every cosine is <= 1, so nothing to drop
     include_embeddings = dedupe_threshold is not None
-    hits = store.search(embedding, n_results=n_results,
+    # Dedupe drops results, so fetch a wider pool to still fill n_results.
+    pool = n_results * _DEDUPE_POOL_FACTOR if include_embeddings else n_results
+    hits = store.search(embedding, n_results=pool,
                         include_embeddings=include_embeddings)
     results = [
         {
@@ -33,10 +40,10 @@ def _search_with_embedding(
         embeddings = np.array([h["embedding"] for h in hits], dtype=np.float32)
         Xn = _normalize(embeddings)
         ranked = np.arange(len(results))
-        kept = _dedupe_indices(ranked, Xn, dedupe_threshold, len(results))
+        kept = _dedupe_indices(ranked, Xn, dedupe_threshold, n_results)
         results = [results[i] for i in kept]
 
-    return results
+    return results[:n_results]
 
 
 def search_footage(
