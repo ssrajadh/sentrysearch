@@ -16,7 +16,7 @@ load_dotenv()  # cwd .env can override
 
 from .qwen_cloud_embedder import default_dashscope_embedding_model
 
-_BACKEND_CHOICES = ["gemini", "local", "mlx", "qwen-cloud"]
+_BACKEND_CHOICES = ["gemini", "litellm", "local", "mlx", "qwen-cloud"]
 
 # Similarity scores aren't comparable across embedding models, so the
 # low-confidence cutoff is per backend. On an MLX 2B dashcam index, everyday
@@ -142,6 +142,16 @@ def _get_search_reranker(
             "PyTorch reranker, or a cloud backend."
         )
 
+    if backend == "litellm":
+        # The Gemini reranker would call Google directly with GEMINI_API_KEY,
+        # going around the gateway the user chose LiteLLM for.
+        from .litellm_embedder import LiteLLMConfigError
+
+        raise LiteLLMConfigError(
+            "--rerank is not supported on the litellm backend yet.\n\n"
+            "Search without --rerank."
+        )
+
     from .gemini_reranker import GeminiReranker
     return GeminiReranker()
 
@@ -201,13 +211,15 @@ def _embed_with_retry(
     """
     import time as _time
     from .gemini_embedder import GeminiAPIKeyError, GeminiQuotaError
+    from .litellm_embedder import LiteLLMConfigError, LiteLLMQuotaError
 
     chunk_id = chunk["chunk_id"]
     last_exc: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         try:
             return embedder.embed_video_chunk(embed_path, verbose=verbose)
-        except (GeminiQuotaError, GeminiAPIKeyError):
+        except (GeminiQuotaError, GeminiAPIKeyError,
+                LiteLLMConfigError, LiteLLMQuotaError):
             raise  # user-facing, stop the run
         except Exception as exc:
             last_exc = exc
@@ -243,14 +255,15 @@ def _embed_with_retry(
 def _handle_error(e: Exception) -> None:
     """Print a user-friendly error and exit."""
     from .gemini_embedder import GeminiAPIKeyError, GeminiQuotaError
+    from .litellm_embedder import LiteLLMConfigError, LiteLLMQuotaError
     from .local_embedder import LocalModelError
     from .mlx_embedder import MLXModelError
     from .store import BackendMismatchError
 
-    if isinstance(e, GeminiAPIKeyError):
+    if isinstance(e, (GeminiAPIKeyError, LiteLLMConfigError)):
         click.secho("Error: " + str(e), fg="red", err=True)
         raise SystemExit(1)
-    if isinstance(e, GeminiQuotaError):
+    if isinstance(e, (GeminiQuotaError, LiteLLMQuotaError)):
         click.secho("Error: " + str(e), fg="yellow", err=True)
         raise SystemExit(1)
     if isinstance(e, (LocalModelError, MLXModelError)):
@@ -440,7 +453,9 @@ def init():
               help="Embedding backend (default: gemini, or local when --model is set).")
 @click.option("--model", default=None, show_default=False,
               help="Model for local backend: qwen8b, qwen2b, or HuggingFace ID "
-                   "(default: auto-detect from hardware). Implies --backend local."
+                   "(default: auto-detect from hardware). Implies --backend local. "
+                   "With --backend litellm, the LiteLLM model name "
+                   "(default: gemini/gemini-embedding-2)."
                    + _MODEL_FLAG_HELP_SUFFIX)
 @click.option("--dashscope-model", default=None, show_default=False,
               help="DashScope embedding model id for --backend qwen-cloud "
@@ -453,7 +468,7 @@ def init():
               help="Retry chunks that previously failed and were routed to the DLQ.")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
 @click.option("--rpm", default=None, type=click.IntRange(min=1),
-              help="Max requests/minute to the cloud API (gemini, qwen-cloud). "
+              help="Max requests/minute to the cloud API (gemini, litellm, qwen-cloud). "
                    "Lower this if you hit rate limits on a free-tier key. "
                    "Overrides GEMINI_RPM / DASHSCOPE_RPM. Ignored by --backend local.")
 def index(directory, chunk_duration, overlap, preprocess, target_resolution,
@@ -500,6 +515,9 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
             # can reload the same model.
             from .mlx_embedder import resolve_model_ref
             model = resolve_model_ref(model)
+        elif backend == "litellm":
+            from .litellm_embedder import default_litellm_model
+            model = model or default_litellm_model()
         elif backend == "local":
             # Auto-detect model from hardware when using local backend
             if model is None:
@@ -784,7 +802,7 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
               help="Use a VLM to rerank candidates before trimming.")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
 @click.option("--rpm", default=None, type=click.IntRange(min=1),
-              help="Max requests/minute to the cloud API (gemini, qwen-cloud). "
+              help="Max requests/minute to the cloud API (gemini, litellm, qwen-cloud). "
                    "Lower this if you hit rate limits on a free-tier key. "
                    "Overrides GEMINI_RPM / DASHSCOPE_RPM. Ignored by --backend local.")
 def search(query, n_results, output_dir, trim, save_top, threshold, overlay, backend, model, dashscope_model, quantize, dedupe_threshold, rerank, verbose, rpm):
@@ -813,7 +831,7 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
             backend = detected_backend or "gemini"
             if model is None:
                 model = detected_model
-        elif backend in ("local", "mlx") and model is None:
+        elif backend in ("local", "mlx", "litellm") and model is None:
             _, detected_model = detect_index(backend=backend)
             model = detected_model
         elif backend == "qwen-cloud":
@@ -832,9 +850,12 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
             if det_backend is None:
                 det_backend, det_model = detect_index()
             if det_backend == backend and det_model and det_model != model:
-                # --model on its own implies --backend local, so an MLX
-                # suggestion has to name its backend or it switches backends.
-                backend_flag = " --backend mlx" if backend == "mlx" else ""
+                # --model on its own implies --backend local, so an MLX or
+                # LiteLLM suggestion has to name its backend or it switches
+                # backends.
+                backend_flag = (
+                    f" --backend {backend}" if backend in ("mlx", "litellm") else ""
+                )
                 click.echo(
                     f"No footage indexed with the {model} model. "
                     f"Your index uses {det_model}.\n\n"
@@ -1030,7 +1051,7 @@ def _present_results(
                    "result exceeds this. Pass 1 to keep near-duplicates.")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
 @click.option("--rpm", default=None, type=click.IntRange(min=1),
-              help="Max requests/minute to the cloud API (gemini, qwen-cloud). "
+              help="Max requests/minute to the cloud API (gemini, litellm, qwen-cloud). "
                    "Lower this if you hit rate limits on a free-tier key. "
                    "Overrides GEMINI_RPM / DASHSCOPE_RPM. Ignored by --backend local.")
 def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
@@ -1056,7 +1077,7 @@ def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
             backend = detected_backend or "gemini"
             if model is None:
                 model = detected_model
-        elif backend in ("local", "mlx") and model is None:
+        elif backend in ("local", "mlx", "litellm") and model is None:
             _, model = detect_index(backend=backend)
         elif backend == "qwen-cloud":
             if dashscope_model is not None:
@@ -1136,7 +1157,7 @@ def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
               help="Enable/disable 4-bit quantization for local backend.")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
 @click.option("--rpm", default=None, type=click.IntRange(min=1),
-              help="Max requests/minute to the cloud API (gemini, qwen-cloud). "
+              help="Max requests/minute to the cloud API (gemini, litellm, qwen-cloud). "
                    "Lower this if you hit rate limits on a free-tier key. "
                    "Overrides GEMINI_RPM / DASHSCOPE_RPM. Ignored by --backend local.")
 def highlights(count, method, neighbors, against, against_mode, dedupe_threshold,
@@ -1166,7 +1187,7 @@ def highlights(count, method, neighbors, against, against_mode, dedupe_threshold
             backend = detected_backend or "gemini"
             if model is None:
                 model = detected_model
-        elif backend in ("local", "mlx") and model is None:
+        elif backend in ("local", "mlx", "litellm") and model is None:
             _, model = detect_index(backend=backend)
 
         store = SentryStore(backend=backend, model=model)
@@ -1281,7 +1302,7 @@ def _print_shell_results(results, threshold):
                    "result exceeds this. Pass 1 to keep near-duplicates.")
 @click.option("--verbose", is_flag=True, help="Show debug info.")
 @click.option("--rpm", default=None, type=click.IntRange(min=1),
-              help="Max requests/minute to the cloud API (gemini, qwen-cloud). "
+              help="Max requests/minute to the cloud API (gemini, litellm, qwen-cloud). "
                    "Lower this if you hit rate limits on a free-tier key. "
                    "Overrides GEMINI_RPM / DASHSCOPE_RPM. Ignored by --backend local.")
 def shell(backend, model, dashscope_model, quantize, n_results, threshold,
@@ -1316,7 +1337,7 @@ def shell(backend, model, dashscope_model, quantize, n_results, threshold,
             backend = detected_backend or "gemini"
             if model is None:
                 model = detected_model
-        elif backend in ("local", "mlx") and model is None:
+        elif backend in ("local", "mlx", "litellm") and model is None:
             _, model = detect_index(backend=backend)
         elif backend == "qwen-cloud":
             if dashscope_model is not None:
@@ -1505,7 +1526,7 @@ def reset(backend, model):
         backend = backend or "gemini"
         if model is None:
             model = detected_model
-    elif backend in ("local", "mlx") and model is None:
+    elif backend in ("local", "mlx", "litellm") and model is None:
         _, model = detect_index(backend=backend)
     elif backend == "qwen-cloud" and model is None:
         _, model = detect_index(backend=backend)
@@ -1548,7 +1569,7 @@ def remove(files, backend, model):
         backend = backend or "gemini"
         if model is None:
             model = detected_model
-    elif backend in ("local", "mlx") and model is None:
+    elif backend in ("local", "mlx", "litellm") and model is None:
         _, model = detect_index(backend=backend)
     elif backend == "qwen-cloud" and model is None:
         _, model = detect_index(backend=backend)

@@ -46,6 +46,13 @@ def get_embedder(backend: str = "gemini", **kwargs) -> BaseEmbedder:
             if kwargs.get("rpm") is not None:
                 qkw["rpm"] = kwargs["rpm"]
             _current_embedder = QwenCloudEmbedder(**qkw)
+        elif backend == "litellm":
+            from .litellm_embedder import LiteLLMEmbedder
+            _current_embedder = LiteLLMEmbedder(
+                model_name=kwargs.get("model"),
+                dimensions=kwargs.get("dimensions"),
+                rpm=kwargs.get("rpm"),
+            )
         else:
             raise ValueError(f"Unknown backend: {backend}")
     return _current_embedder
