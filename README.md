@@ -22,6 +22,7 @@ Semantic search over video footage. Type what you're looking for, get a trimmed 
   - [Search by image](#search-by-image)
   - [Highlights](#highlights)
   - [Qwen Cloud (Alibaba DashScope)](#qwen-cloud-alibaba-dashscope)
+  - [LiteLLM (AI gateways)](#litellm-ai-gateways)
   - [Local Backend (no API key needed)](#local-backend-no-api-key-needed)
   - [Why the local model is fast](#why-the-local-model-is-fast)
   - [MLX Backend (Apple Silicon)](#mlx-backend-apple-silicon)
@@ -225,6 +226,36 @@ sentrysearch search "your query" --backend qwen-cloud
 ```
 
 **Video uploads:** local chunk files are sent to **DashScope-managed temporary OSS by the official Python SDK** before the API consumes them (the HTTP API expects a URL; the SDK handles upload for you).
+
+### LiteLLM (AI gateways)
+
+Use the **litellm** backend when your LLM access goes through a [LiteLLM](https://github.com/BerriAI/litellm) gateway, such as a company proxy that holds the provider keys and tracks spend. It also works without a proxy, with LiteLLM running in-process on your own provider key. The default model is `gemini/gemini-embedding-2`, the same model as the default backend, so search quality is the same.
+
+**Through a LiteLLM proxy.** No extra install, and no provider key on your machine:
+
+```bash
+export LITELLM_PROXY_API_BASE=https://llm-gateway.example.com
+export LITELLM_PROXY_API_KEY=sk-...   # the key your gateway issued you
+sentrysearch index /path/to/footage --backend litellm --model <model name on your gateway>
+sentrysearch search "your query"
+```
+
+**Without a proxy:**
+
+```bash
+uv tool install ".[litellm]"
+export GEMINI_API_KEY=...
+sentrysearch index /path/to/footage --backend litellm
+sentrysearch search "your query"
+```
+
+Notes:
+
+- `--model` or `LITELLM_EMBEDDING_MODEL` picks the model. On a proxy it's whatever name the gateway admin configured. Only `gemini-embedding-2` has been tested. Other video-capable models LiteLLM can reach, such as Amazon Nova multimodal embeddings or TwelveLabs Marengo on Bedrock, may work but are untested; they keep their native vector size unless you set `LITELLM_EMBEDDING_DIMENSIONS`.
+- Each model gets its own index, and a `--backend litellm` index is separate from one built with the default gemini backend, even for the same model.
+- **Don't set up model fallbacks for embeddings on your gateway.** A fallback to a different model returns vectors from a different embedding space, which silently corrupts search results instead of raising an error. Falling back to another deployment of the *same* model is fine.
+- `--rerank` isn't supported yet. The Gemini reranker would call Google directly and bypass your gateway.
+- Without a proxy, sentrysearch sets `LITELLM_LOCAL_MODEL_COST_MAP=True` so importing LiteLLM doesn't download its pricing table.
 
 ### Local Backend (no API key needed)
 
