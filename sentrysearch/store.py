@@ -37,6 +37,10 @@ def _collection_name(backend: str, model: str | None = None) -> str:
         # the collection name stays readable and stable across machines.
         name = Path(model).name if model else "qwen3-vl-embedding"
         return f"dashcam_chunks_mlx_{_chroma_collection_slug(name)}"
+    if backend == "litellm":
+        from .litellm_embedder import default_litellm_model
+        slug = _chroma_collection_slug(model or default_litellm_model())
+        return f"dashcam_chunks_litellm_{slug}"
     if model:
         return f"dashcam_chunks_local_{model}"
     # Legacy: local backend without model distinction
@@ -48,6 +52,7 @@ def _collection_name(backend: str, model: str | None = None) -> str:
 _BACKEND_MODULES = {
     "local": ("torch",),
     "mlx": ("mlx", "mlx_vlm"),
+    "litellm": ("litellm",),
 }
 
 
@@ -55,6 +60,11 @@ def _backend_installed(backend: str) -> bool:
     """Return True if *backend*'s optional dependencies are importable."""
     import importlib.util
 
+    if backend == "litellm":
+        # Proxy mode talks HTTP and needs no SDK.
+        from .litellm_embedder import proxy_configured
+        if proxy_configured():
+            return True
     return all(
         importlib.util.find_spec(mod) is not None
         for mod in _BACKEND_MODULES.get(backend, ())
@@ -70,7 +80,8 @@ def detect_index(
     Returns ``(None, None)`` when no index contains data.
     Checks gemini first, then DashScope ``qwen-cloud`` collections, then
     model-specific local collections, then the legacy ``dashcam_chunks_local``
-    collection (treated as qwen8b), then MLX collections.
+    collection (treated as qwen8b), then MLX collections, then LiteLLM
+    collections.
 
     Without *backend*, an index whose backend isn't installed is passed over
     in favor of the next one that is: an old ``local`` index shouldn't win
@@ -149,6 +160,17 @@ def _indexes_with_data(client, backend: str | None):
                 if model is None:
                     model = name.removeprefix("dashcam_chunks_mlx_")
                 yield "mlx", model
+
+    # LiteLLM after everything else, for the same reason as MLX.
+    for name in sorted(existing):
+        if want("litellm") and name.startswith("dashcam_chunks_litellm_"):
+            col = client.get_collection(name)
+            if col.count() > 0:
+                meta = col.metadata or {}
+                model = meta.get("embedding_model")
+                if model is None:
+                    model = name.removeprefix("dashcam_chunks_litellm_")
+                yield "litellm", model
 
 
 def detect_backend(db_path: str | Path | None = None) -> str | None:

@@ -37,6 +37,12 @@ local-quantized = [
 qwen-cloud = [
     "dashscope>=1.25.17",
 ]
+# SDK mode only; proxy mode (LITELLM_PROXY_API_BASE) needs no extra. The floor
+# is the release the backend was tested against, and it also keeps installs
+# clear of 1.82.7 and 1.82.8, the two releases compromised on PyPI.
+litellm = [
+    "litellm>=1.101.0",
+]
 # Apple Silicon only. Quantizes on Metal, which the PyTorch path cannot do
 # (its only quantization route is bitsandbytes, which is CUDA-only), so the
 # 2B runs at 4-bit in ~1.8 GB with no measured loss of retrieval accuracy.
