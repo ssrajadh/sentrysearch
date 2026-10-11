@@ -2322,6 +2322,7 @@ litellm = [
 ]
 local = [
     { name = "accelerate" },
+    { name = "av" },
     { name = "qwen-vl-utils" },
     { name = "torch", version = "2.6.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
     { name = "torch", version = "2.6.0+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "sys_platform == 'win32'" },
@@ -2332,6 +2333,7 @@ local = [
 ]
 local-quantized = [
     { name = "accelerate" },
+    { name = "av" },
     { name = "bitsandbytes" },
     { name = "qwen-vl-utils" },
     { name = "torch", version = "2.6.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
@@ -2362,6 +2364,8 @@ test = [
 requires-dist = [
     { name = "accelerate", marker = "extra == 'local'" },
     { name = "accelerate", marker = "extra == 'local-quantized'" },
+    { name = "av", marker = "extra == 'local'", specifier = "<19" },
+    { name = "av", marker = "extra == 'local-quantized'", specifier = "<19" },
     { name = "bitsandbytes", marker = "extra == 'local-quantized'" },
     { name = "chromadb", specifier = ">=0.4" },
     { name = "click", specifier = ">=8.1" },
