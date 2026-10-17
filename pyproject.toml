@@ -23,6 +23,10 @@ local = [
     "accelerate",
     "qwen-vl-utils",
     "torchcodec>=0.6",
+    # When torchcodec can't load, qwen-vl-utils falls back to torchvision's
+    # video reader, and torchvision <0.22 calls av.open(metadata_errors=...).
+    # PyAV 19 removed that argument, so every embed fails with a TypeError.
+    "av<19",
 ]
 local-quantized = [
     "torch>=2.0",
@@ -32,6 +36,8 @@ local-quantized = [
     "accelerate",
     "qwen-vl-utils",
     "torchcodec>=0.6",
+    # See the note on av in the `local` extra above.
+    "av<19",
     "bitsandbytes",
 ]
 qwen-cloud = [
