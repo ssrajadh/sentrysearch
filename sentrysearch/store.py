@@ -71,6 +71,114 @@ def _backend_installed(backend: str) -> bool:
     )
 
 
+def _indexes_with_data(client):
+    """Yield ``(backend, model, collection_name)`` for each non-empty index.
+
+    Ordered gemini, qwen-cloud, local, MLX, then LiteLLM. The collection name
+    travels alongside the label so callers can open the collection directly
+    (``client.get_collection(name)``) rather than deriving it from
+    ``(backend, model)``: for the legacy ``dashcam_chunks_local`` collection
+    the two disagree (its model reads as ``qwen8b``, but
+    ``_collection_name("local", "qwen8b")`` is a *different* collection), so
+    deriving the name would open the wrong, empty one.
+    """
+    existing = {c.name for c in client.list_collections()}
+
+    # Gemini first (default / legacy)
+    if "dashcam_chunks" in existing:
+        col = client.get_collection("dashcam_chunks")
+        if col.count() > 0:
+            yield "gemini", None, "dashcam_chunks"
+
+    # DashScope qwen-cloud (dashcam_chunks_qwen_cloud_<model>)
+    for name in sorted(existing):
+        if name.startswith("dashcam_chunks_qwen_cloud_"):
+            col = client.get_collection(name)
+            if col.count() > 0:
+                meta = col.metadata or {}
+                model = meta.get("embedding_model")
+                if model is None:
+                    model = name.removeprefix("dashcam_chunks_qwen_cloud_")
+                yield "qwen-cloud", model, name
+
+    # Model-specific local collections (dashcam_chunks_local_<model>)
+    for name in sorted(existing):
+        if name.startswith("dashcam_chunks_local_"):
+            col = client.get_collection(name)
+            if col.count() > 0:
+                meta = col.metadata or {}
+                model = meta.get("embedding_model")
+                if model is None:
+                    model = name.removeprefix("dashcam_chunks_local_")
+                yield "local", model, name
+
+    # Legacy local collection (no model suffix) — treat as qwen8b
+    if "dashcam_chunks_local" in existing:
+        col = client.get_collection("dashcam_chunks_local")
+        if col.count() > 0:
+            meta = col.metadata or {}
+            yield "local", meta.get("embedding_model", "qwen8b"), "dashcam_chunks_local"
+
+    # MLX last: an existing local index keeps its place as the default, so
+    # trying the MLX backend once doesn't silently change what a bare
+    # `sentrysearch search` returns.
+    for name in sorted(existing):
+        if name.startswith("dashcam_chunks_mlx_"):
+            col = client.get_collection(name)
+            if col.count() > 0:
+                meta = col.metadata or {}
+                model = meta.get("embedding_model")
+                if model is None:
+                    model = name.removeprefix("dashcam_chunks_mlx_")
+                yield "mlx", model, name
+
+    # LiteLLM after everything else, for the same reason as MLX.
+    for name in sorted(existing):
+        if name.startswith("dashcam_chunks_litellm_"):
+            col = client.get_collection(name)
+            if col.count() > 0:
+                meta = col.metadata or {}
+                model = meta.get("embedding_model")
+                if model is None:
+                    model = name.removeprefix("dashcam_chunks_litellm_")
+                yield "litellm", model, name
+
+
+def list_populated_indexes(
+    db_path: str | Path | None = None,
+) -> list[tuple[str, str | None]]:
+    """Return ``(backend, model)`` for every index with data.
+
+    Unlike :func:`detect_index` — which returns only the first match in
+    priority order — this lists *all* populated backend/model combinations.
+    Returns ``[]`` when no index contains data.
+    """
+    db_path = str(db_path or DEFAULT_DB_PATH)
+    if not Path(db_path).exists():
+        return []
+    client = chromadb.PersistentClient(path=db_path)
+    return [(backend, model) for backend, model, _ in _indexes_with_data(client)]
+
+
+def get_all_stats(db_path: str | Path | None = None) -> list[dict]:
+    """Return per-index stats for every populated backend/model combination.
+
+    Reads each collection with ``client.get_collection`` — never
+    ``get_or_create`` — so reporting stats never creates a collection as a
+    side effect.
+    """
+    db_path = str(db_path or DEFAULT_DB_PATH)
+    if not Path(db_path).exists():
+        return []
+    client = chromadb.PersistentClient(path=db_path)
+    stats = []
+    for backend, model, name in _indexes_with_data(client):
+        entry = {"backend": backend, "model": model}
+        entry.update(_collection_stats(client.get_collection(name)))
+        stats.append(entry)
+    return stats
+
+
 def detect_index(
     db_path: str | Path | None = None,
     backend: str | None = None,
@@ -93,84 +201,14 @@ def detect_index(
     only needs the model. Without it, a caller asking for ``mlx`` while a
     ``local`` index also exists would be handed the local model name.
     """
-    db_path = str(db_path or DEFAULT_DB_PATH)
-    if not Path(db_path).exists():
-        return None, None
-    client = chromadb.PersistentClient(path=db_path)
-
     first = None
-    for found in _indexes_with_data(client, backend):
-        if backend is not None or _backend_installed(found[0]):
-            return found
-        first = first or found
+    for found_backend, found_model in list_populated_indexes(db_path):
+        if backend is not None and found_backend != backend:
+            continue
+        if backend is not None or _backend_installed(found_backend):
+            return found_backend, found_model
+        first = first or (found_backend, found_model)
     return first or (None, None)
-
-
-def _indexes_with_data(client, backend: str | None):
-    """Yield ``(backend, model)`` for each non-empty index, in priority order."""
-    existing = {c.name for c in client.list_collections()}
-
-    def want(name: str) -> bool:
-        return backend is None or backend == name
-
-    # Gemini first (default / legacy)
-    if want("gemini") and "dashcam_chunks" in existing:
-        col = client.get_collection("dashcam_chunks")
-        if col.count() > 0:
-            yield "gemini", None
-
-    # DashScope qwen-cloud (dashcam_chunks_qwen_cloud_<model>)
-    for name in sorted(existing):
-        if want("qwen-cloud") and name.startswith("dashcam_chunks_qwen_cloud_"):
-            col = client.get_collection(name)
-            if col.count() > 0:
-                meta = col.metadata or {}
-                model = meta.get("embedding_model")
-                if model is None:
-                    model = name.removeprefix("dashcam_chunks_qwen_cloud_")
-                yield "qwen-cloud", model
-
-    # Model-specific local collections (dashcam_chunks_local_<model>)
-    for name in sorted(existing):
-        if want("local") and name.startswith("dashcam_chunks_local_"):
-            col = client.get_collection(name)
-            if col.count() > 0:
-                meta = col.metadata or {}
-                model = meta.get("embedding_model")
-                if model is None:
-                    model = name.removeprefix("dashcam_chunks_local_")
-                yield "local", model
-
-    # Legacy local collection (no model suffix) — treat as qwen8b
-    if want("local") and "dashcam_chunks_local" in existing:
-        col = client.get_collection("dashcam_chunks_local")
-        if col.count() > 0:
-            meta = col.metadata or {}
-            yield "local", meta.get("embedding_model", "qwen8b")
-
-    # MLX last: an existing local index keeps its place as the default, so
-    # trying the MLX backend once doesn't silently change what a bare
-    # `sentrysearch search` returns.
-    for name in sorted(existing):
-        if want("mlx") and name.startswith("dashcam_chunks_mlx_"):
-            col = client.get_collection(name)
-            if col.count() > 0:
-                meta = col.metadata or {}
-                model = meta.get("embedding_model")
-                if model is None:
-                    model = name.removeprefix("dashcam_chunks_mlx_")
-                yield "mlx", model
-
-    # LiteLLM after everything else, for the same reason as MLX.
-    for name in sorted(existing):
-        if want("litellm") and name.startswith("dashcam_chunks_litellm_"):
-            col = client.get_collection(name)
-            if col.count() > 0:
-                meta = col.metadata or {}
-                model = meta.get("embedding_model")
-                if model is None:
-                    model = name.removeprefix("dashcam_chunks_litellm_")
-                yield "litellm", model
 
 
 def detect_backend(db_path: str | Path | None = None) -> str | None:
@@ -353,15 +391,20 @@ class SentryStore:
 
     def get_stats(self) -> dict:
         """Return store statistics."""
-        total = self._collection.count()
-        if total == 0:
-            return {"total_chunks": 0, "unique_source_files": 0, "source_files": []}
+        return _collection_stats(self._collection)
 
-        # Fetch all metadata (only the fields we need)
-        all_meta = self._collection.get(include=["metadatas"])
-        source_files = sorted({m["source_file"] for m in all_meta["metadatas"]})
-        return {
-            "total_chunks": total,
-            "unique_source_files": len(source_files),
-            "source_files": source_files,
-        }
+
+def _collection_stats(collection) -> dict:
+    """Return ``{total_chunks, unique_source_files, source_files}`` for *collection*."""
+    total = collection.count()
+    if total == 0:
+        return {"total_chunks": 0, "unique_source_files": 0, "source_files": []}
+
+    # Fetch all metadata (only the fields we need)
+    all_meta = collection.get(include=["metadatas"])
+    source_files = sorted({m["source_file"] for m in all_meta["metadatas"]})
+    return {
+        "total_chunks": total,
+        "unique_source_files": len(source_files),
+        "source_files": source_files,
+    }

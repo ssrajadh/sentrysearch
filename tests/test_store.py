@@ -461,6 +461,159 @@ class TestDetectIndex:
         assert detect_index(tmp_path / "db") == ("qwen-cloud", "qwen3-vl-embedding")
 
 
+class TestListPopulatedIndexes:
+    def test_empty_db_returns_empty_list(self, tmp_path):
+        from sentrysearch.store import SentryStore, list_populated_indexes
+
+        SentryStore(db_path=tmp_path / "db", backend="gemini")
+        assert list_populated_indexes(tmp_path / "db") == []
+
+    def test_nonexistent_path_returns_empty_list(self, tmp_path):
+        from sentrysearch.store import list_populated_indexes
+
+        assert list_populated_indexes(tmp_path / "no_such_dir") == []
+
+    def test_single_backend(self, tmp_path):
+        from sentrysearch.store import SentryStore, list_populated_indexes
+
+        SentryStore(db_path=tmp_path / "db", backend="gemini").add_chunk(
+            "c1", _make_embedding(),
+            {"source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0})
+        assert list_populated_indexes(tmp_path / "db") == [("gemini", None)]
+
+    def test_lists_all_populated_indexes(self, tmp_path):
+        from sentrysearch.store import SentryStore, list_populated_indexes
+
+        db = tmp_path / "db"
+        emb = _make_embedding()
+        SentryStore(db_path=db, backend="gemini").add_chunk(
+            "g1", emb,
+            {"source_file": "g.mp4", "start_time": 0.0, "end_time": 30.0})
+        SentryStore(db_path=db, backend="local", model="qwen8b").add_chunk(
+            "l1", emb,
+            {"source_file": "l.mp4", "start_time": 0.0, "end_time": 30.0})
+        assert list_populated_indexes(db) == [
+            ("gemini", None), ("local", "qwen8b"),
+        ]
+
+    def test_skips_empty_collections(self, tmp_path):
+        from sentrysearch.store import SentryStore, list_populated_indexes
+
+        db = tmp_path / "db"
+        # Create an empty gemini collection plus populated local one.
+        SentryStore(db_path=db, backend="gemini")
+        SentryStore(db_path=db, backend="local", model="qwen2b").add_chunk(
+            "l1", _make_embedding(),
+            {"source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0})
+        assert list_populated_indexes(db) == [("local", "qwen2b")]
+
+
+class TestGetAllStats:
+    def test_empty_db_returns_empty_list(self, tmp_path):
+        from sentrysearch.store import SentryStore, get_all_stats
+
+        SentryStore(db_path=tmp_path / "db", backend="gemini")
+        assert get_all_stats(tmp_path / "db") == []
+
+    def test_nonexistent_path_returns_empty_list(self, tmp_path):
+        from sentrysearch.store import get_all_stats
+
+        assert get_all_stats(tmp_path / "no_such_dir") == []
+
+    def test_one_index(self, tmp_path):
+        from sentrysearch.store import SentryStore, get_all_stats
+
+        SentryStore(db_path=tmp_path / "db", backend="gemini").add_chunk(
+            "c1", _make_embedding(),
+            {"source_file": "v.mp4", "start_time": 0.0, "end_time": 30.0})
+        assert get_all_stats(tmp_path / "db") == [{
+            "backend": "gemini",
+            "model": None,
+            "total_chunks": 1,
+            "unique_source_files": 1,
+            "source_files": ["v.mp4"],
+        }]
+
+    def test_legacy_local_collection_reads_its_own_chunks(self, tmp_path):
+        """The unsuffixed dashcam_chunks_local collection must be reported with
+        its real chunk count — not routed through SentryStore, whose
+        (backend="local", model="qwen8b") maps to a *different* collection."""
+        from sentrysearch.store import SentryStore, get_all_stats
+
+        db = tmp_path / "db"
+        # Legacy install: no model argument -> dashcam_chunks_local.
+        SentryStore(db_path=db, backend="local").add_chunk(
+            "l1", _make_embedding(),
+            {"source_file": "legacy.mp4", "start_time": 0.0, "end_time": 30.0})
+
+        stats = get_all_stats(db)
+        assert stats == [{
+            "backend": "local",
+            "model": "qwen8b",
+            "total_chunks": 1,
+            "unique_source_files": 1,
+            "source_files": ["legacy.mp4"],
+        }]
+
+    def test_legacy_local_does_not_create_the_model_suffixed_collection(self, tmp_path):
+        """Reading stats must not create dashcam_chunks_local_qwen8b as a side
+        effect, or the legacy index would report twice on the next run."""
+        import chromadb
+
+        from sentrysearch.store import SentryStore, get_all_stats
+
+        db = tmp_path / "db"
+        SentryStore(db_path=db, backend="local").add_chunk(
+            "l1", _make_embedding(),
+            {"source_file": "legacy.mp4", "start_time": 0.0, "end_time": 30.0})
+
+        get_all_stats(db)
+        get_all_stats(db)  # a second read must still see exactly one index
+
+        client = chromadb.PersistentClient(path=str(db))
+        names = sorted(c.name for c in client.list_collections())
+        assert names == ["dashcam_chunks_local"]
+        assert len(get_all_stats(db)) == 1
+
+    def test_legacy_and_model_suffixed_local_are_distinct(self, tmp_path):
+        """Both the legacy collection and a qwen8b-suffixed one may exist; each
+        is its own index with its own count."""
+        from sentrysearch.store import SentryStore, get_all_stats
+
+        db = tmp_path / "db"
+        SentryStore(db_path=db, backend="local").add_chunk(
+            "legacy", _make_embedding(),
+            {"source_file": "legacy.mp4", "start_time": 0.0, "end_time": 30.0})
+        SentryStore(db_path=db, backend="local", model="qwen8b").add_chunk(
+            "suffixed", _make_embedding(),
+            {"source_file": "suffixed.mp4", "start_time": 0.0, "end_time": 30.0})
+
+        stats = get_all_stats(db)
+        assert [(s["backend"], s["model"], s["total_chunks"]) for s in stats] == [
+            ("local", "qwen8b", 1),
+            ("local", "qwen8b", 1),
+        ]
+        assert sorted(s["source_files"][0] for s in stats) == [
+            "legacy.mp4", "suffixed.mp4",
+        ]
+
+    def test_lists_all_backends(self, tmp_path):
+        from sentrysearch.store import SentryStore, get_all_stats
+
+        db = tmp_path / "db"
+        emb = _make_embedding()
+        SentryStore(db_path=db, backend="gemini").add_chunk(
+            "g1", emb,
+            {"source_file": "g.mp4", "start_time": 0.0, "end_time": 30.0})
+        SentryStore(db_path=db, backend="local", model="qwen2b").add_chunk(
+            "l1", emb,
+            {"source_file": "l.mp4", "start_time": 0.0, "end_time": 30.0})
+        stats = get_all_stats(db)
+        assert [(s["backend"], s["model"]) for s in stats] == [
+            ("gemini", None), ("local", "qwen2b"),
+        ]
+
+
 class TestBackendInstalled:
     def test_core_backends_always_installed(self):
         from sentrysearch.store import _backend_installed

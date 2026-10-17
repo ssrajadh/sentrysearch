@@ -1605,49 +1605,38 @@ def overlay(video, output):
 @click.option("--json", "as_json", is_flag=True, default=False, help="Output stats as JSON.")
 def stats(as_json: bool = False):
     """Print index statistics."""
-    from .store import SentryStore, detect_index
+    from .store import get_all_stats
 
-    # detect_index() is the single source of truth for the backend: both
-    # outputs report it. store.get_backend() reads the collection metadata,
-    # so on a legacy index without embedding_backend metadata it answered
-    # "gemini" while detection answered "local" and the two outputs disagreed.
-    backend, model = detect_index()
-    store = SentryStore(backend=backend or "gemini", model=model)
-    s = store.get_stats()
-
-    missing_files = []
-    missing_set = set()
-    for f in s["source_files"]:
-        if not os.path.exists(f):
-            missing_files.append(f)
-            missing_set.add(f)
+    # A user may have footage indexed under several backend/model
+    # combinations, so report every populated index rather than just the
+    # auto-detected one. get_all_stats() reads collections directly and
+    # never creates one.
+    entries = get_all_stats()
+    for e in entries:
+        e["missing_files"] = [f for f in e["source_files"] if not os.path.exists(f)]
 
     if as_json:
-        data = {
-            "backend": backend,
-            "model": model,
-            "total_chunks": s["total_chunks"],
-            "unique_source_files": s["unique_source_files"],
-            "source_files": s["source_files"],
-            "missing_files": missing_files,
-        }
-        click.echo(json.dumps(data, indent=2))
+        click.echo(json.dumps(entries, indent=2))
         return
 
-    if s["total_chunks"] == 0:
+    if not entries:
         click.echo("Index is empty. Run `sentrysearch index <directory>` first.")
         return
 
-    click.echo(f"Total chunks:  {s['total_chunks']}")
-    click.echo(f"Source files:  {s['unique_source_files']}")
-    backend_label = backend
-    if model:
-        backend_label += f" ({model})"
-    click.echo(f"Backend:       {backend_label}")
-    click.echo("\nIndexed files:")
-    for f in s["source_files"]:
-        label = "" if f not in missing_set else "  [missing]"
-        click.echo(f"  {f}{label}")
+    for i, e in enumerate(entries):
+        if i > 0:
+            click.echo("")
+        click.echo(f"Total chunks:  {e['total_chunks']}")
+        click.echo(f"Source files:  {e['unique_source_files']}")
+        backend_label = e["backend"]
+        if e["model"]:
+            backend_label += f" ({e['model']})"
+        click.echo(f"Backend:       {backend_label}")
+        click.echo("\nIndexed files:")
+        missing_set = set(e["missing_files"])
+        for f in e["source_files"]:
+            label = "" if f not in missing_set else "  [missing]"
+            click.echo(f"  {f}{label}")
 
 
 # -----------------------------------------------------------------------

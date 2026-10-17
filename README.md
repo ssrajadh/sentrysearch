@@ -415,9 +415,11 @@ sentryblur prompt --last "road signs"   # → match_<...>_blurred.mp4
 # Show index info (files marked [missing] no longer exist on disk)
 sentrysearch stats
 
-# Machine-readable JSON (keys: backend, model, total_chunks, unique_source_files,
-# source_files, missing_files). backend/model are null when no index is detected,
-# source_files is every indexed path, and missing_files is the subset that is gone.
+# Machine-readable JSON: always a list, one object per populated index
+# (keys: backend, model, total_chunks, unique_source_files, source_files,
+# missing_files). Empty list when no index is detected. backend/model are
+# null for the gemini index, source_files is every indexed path, and
+# missing_files is the subset that is gone.
 sentrysearch stats --json
 
 # Remove specific files by path substring
