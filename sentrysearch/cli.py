@@ -17,7 +17,7 @@ load_dotenv()  # cwd .env can override
 
 from .qwen_cloud_embedder import default_dashscope_embedding_model
 
-_BACKEND_CHOICES = ["gemini", "litellm", "local", "mlx", "qwen-cloud"]
+_BACKEND_CHOICES = ["gemini", "litellm", "local", "local-tencent", "mlx", "qwen-cloud"]
 
 # Similarity scores aren't comparable across embedding models, so the
 # low-confidence cutoff is per backend. On an MLX 2B dashcam index, everyday
@@ -239,6 +239,13 @@ def _get_search_reranker(
             model_name=model or "qwen8b",
             quantize=quantize,
         ).load()
+
+    if backend == "local-tencent":
+        from .local_embedder import LocalModelError
+        raise LocalModelError(
+            "--rerank is not supported on the local-tencent backend yet.\n\n"
+            "Search without --rerank."
+        )
 
     if backend == "mlx":
         # Falling through to the Gemini reranker would send results to an API
@@ -601,7 +608,7 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
     )
     from .dlq import DeadLetterQueue
     from .embedder import get_embedder, reset_embedder
-    from .local_embedder import detect_default_model, normalize_model_key
+    from .local_embedder import detect_default_model, detect_default_model_tencent, normalize_model_key
     from .store import SentryStore
 
     try:
@@ -646,6 +653,12 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
             # Auto-detect model from hardware when using local backend
             if model is None:
                 model = detect_default_model()
+                click.echo(f"Auto-detected model: {model}", err=True)
+            model = normalize_model_key(model)
+        elif backend == "local-tencent":
+            # Auto-detect model from hardware when using local backend
+            if model is None:
+                model = detect_default_model_tencent()
                 click.echo(f"Auto-detected model: {model}", err=True)
             model = normalize_model_key(model)
         else:
@@ -946,7 +959,7 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
         if model is not None and backend is None:
             backend = "local"
 
-        if backend == "local" and model is not None:
+        if backend in ("local", "local-tencent") and model is not None:
             model = normalize_model_key(model)
 
         # Auto-detect backend and model from whichever collection has data
@@ -955,7 +968,7 @@ def search(query, n_results, output_dir, trim, save_top, threshold, overlay, bac
             backend = detected_backend or "gemini"
             if model is None:
                 model = detected_model
-        elif backend in ("local", "mlx", "litellm") and model is None:
+        elif backend in ("local", "local-tencent", "mlx", "litellm") and model is None:
             _, detected_model = detect_index(backend=backend)
             model = detected_model
         elif backend == "qwen-cloud":
@@ -1194,14 +1207,14 @@ def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
             backend = "qwen-cloud"
         if model is not None and backend is None:
             backend = "local"
-        if backend == "local" and model is not None:
+        if backend in ("local", "local-tencent") and model is not None:
             model = normalize_model_key(model)
         if backend is None:
             detected_backend, detected_model = detect_index()
             backend = detected_backend or "gemini"
             if model is None:
                 model = detected_model
-        elif backend in ("local", "mlx", "litellm") and model is None:
+        elif backend in ("local", "local-tencent", "mlx", "litellm") and model is None:
             _, model = detect_index(backend=backend)
         elif backend == "qwen-cloud":
             if dashscope_model is not None:
@@ -1273,7 +1286,7 @@ def img(image, n_results, output_dir, trim, save_top, threshold, overlay,
               help="Directory to save trimmed clips.")
 @click.option("--overlay/--no-overlay", default=False, show_default=True,
               help="Burn Tesla telemetry overlay onto trimmed clips.")
-@click.option("--backend", type=click.Choice(["gemini", "local", "mlx"]), default=None,
+@click.option("--backend", type=click.Choice(["gemini", "local", "local-tencent", "mlx"]), default=None,
               help="Embedding backend (auto-detected from index if omitted).")
 @click.option("--model", default=None,
               help="Model for local backend (default: auto-detect from index).")
@@ -1311,7 +1324,7 @@ def highlights(count, method, neighbors, against, against_mode, dedupe_threshold
             backend = detected_backend or "gemini"
             if model is None:
                 model = detected_model
-        elif backend in ("local", "mlx", "litellm") and model is None:
+        elif backend in ("local", "local-tencent", "mlx", "litellm") and model is None:
             _, model = detect_index(backend=backend)
 
         store = SentryStore(backend=backend, model=model)
@@ -1454,14 +1467,14 @@ def shell(backend, model, dashscope_model, quantize, n_results, threshold,
             backend = "qwen-cloud"
         if model is not None and backend is None:
             backend = "local"
-        if backend == "local" and model is not None:
+        if backend in ("local", "local-tencent") and model is not None:
             model = normalize_model_key(model)
         if backend is None:
             detected_backend, detected_model = detect_index()
             backend = detected_backend or "gemini"
             if model is None:
                 model = detected_model
-        elif backend in ("local", "mlx", "litellm") and model is None:
+        elif backend in ("local", "local-tencent", "mlx", "litellm") and model is None:
             _, model = detect_index(backend=backend)
         elif backend == "qwen-cloud":
             if dashscope_model is not None:
@@ -1661,7 +1674,7 @@ def reset(backend, model):
         backend = backend or "gemini"
         if model is None:
             model = detected_model
-    elif backend in ("local", "mlx", "litellm") and model is None:
+    elif backend in ("local", "local-tencent", "mlx", "litellm") and model is None:
         _, model = detect_index(backend=backend)
     elif backend == "qwen-cloud" and model is None:
         _, model = detect_index(backend=backend)
@@ -1704,7 +1717,7 @@ def remove(files, backend, model):
         backend = backend or "gemini"
         if model is None:
             model = detected_model
-    elif backend in ("local", "mlx", "litellm") and model is None:
+    elif backend in ("local", "local-tencent", "mlx", "litellm") and model is None:
         _, model = detect_index(backend=backend)
     elif backend == "qwen-cloud" and model is None:
         _, model = detect_index(backend=backend)

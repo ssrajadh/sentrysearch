@@ -21,6 +21,8 @@ class LocalModelError(RuntimeError):
 MODEL_ALIASES: dict[str, str] = {
     "qwen8b": "Qwen/Qwen3-VL-Embedding-8B",
     "qwen2b": "Qwen/Qwen3-VL-Embedding-2B",
+    "tencent9b": "tencent/WeMM-Embedding-9B",
+    "tencent2b": "tencent/WeMM-Embedding-2B",
 }
 
 # Reverse lookup: full HuggingFace ID → short alias
@@ -66,6 +68,37 @@ def detect_default_model() -> str:
 
     # CPU-only — 2B is more practical
     return "qwen2b"
+
+
+def detect_default_model_tencent() -> str:
+    """Pick the best default local model based on available hardware.
+
+    Returns 'tencent9b' for NVIDIA GPUs and high-memory Apple Silicon Macs,
+    'tencent2b' for lower-memory Macs and CPU-only systems.
+    """
+    try:
+        import torch
+    except ImportError:
+        return "tencent9b"
+
+    if torch.cuda.is_available():
+        return "tencent9b"
+
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        # Apple Silicon unified memory — 8B needs ~16 GB in float16
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["sysctl", "-n", "hw.memsize"],
+                capture_output=True, text=True, timeout=5,
+            )
+            mem_gb = int(result.stdout.strip()) / (1024 ** 3)
+            return "tencent9b" if mem_gb >= 24 else "tencent2b"
+        except Exception:
+            return "tencent2b"
+
+    # CPU-only — 2B is more practical
+    return "tencent2b"
 
 
 def _cpu_fallback_warning() -> str:
@@ -487,6 +520,218 @@ class LocalEmbedder(BaseEmbedder):
             )
 
         return result
+
+    def dimensions(self) -> int:
+        return self._dimensions
+
+
+
+class LocalEmbedder_tencent(BaseEmbedder):
+    """WeMM-Embedding backend (Tencent, local GPU inference)."""
+
+    def __init__(
+        self,
+        model_name: str = "tencent9b",
+        dimensions: int = 4096,   # 2B 原生 2048，9B 用 4096
+        quantize: bool | None = None,
+    ):
+        self._model_name = MODEL_ALIASES.get(model_name, model_name)
+        self._dimensions = dimensions
+        self._quantize = quantize  # None = auto-detect
+        self._model = None
+        self._processor = None
+        self._process_vision_info = None
+
+    def _load_model(self):
+        if self._model is not None:
+            return
+
+        try:
+            import torch
+            from transformers import AutoModel, AutoProcessor
+            from qwen_vl_utils import process_vision_info
+        except ImportError as e:
+            raise LocalModelError(
+                f"Missing dependencies for WeMM backend: {e}\n\n"
+                "Install with: uv tool install \".[local]\"\n"
+                "For 4-bit quantization: uv tool install \".[local-quantized]\""
+            ) from e
+
+        # 缓存检查
+        try:
+            from huggingface_hub import try_to_load_from_cache
+            cached = try_to_load_from_cache(self._model_name, "config.json")
+            is_cached = (
+                cached is not None
+                and not isinstance(cached, str)
+                or (isinstance(cached, str) and os.path.exists(cached))
+            )
+        except Exception:
+            is_cached = False
+
+        if is_cached:
+            print(f"Loading {self._model_name}...", file=sys.stderr)
+        else:
+            print(
+                f"Downloading {self._model_name} (this only happens once)...",
+                file=sys.stderr,
+            )
+
+        # 设备 / dtype
+        if torch.cuda.is_available():
+            device = "cuda"
+            dtype = torch.bfloat16
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device = "mps"
+            dtype = torch.float16
+        else:
+            device = "cpu"
+            dtype = torch.float32
+            print(_cpu_fallback_warning(), file=sys.stderr)
+
+        # 4-bit 量化：显式 flag 或按显存自动判断
+        quantization_config = None
+        want_quantize = self._quantize
+        if want_quantize is None and device == "cuda":
+            props = torch.cuda.get_device_properties(0)
+            total_mem = getattr(props, "total_memory", None) or getattr(
+                props, "total_mem", 0
+            )
+            vram_gb = total_mem / (1024 ** 3)
+            # 9B bf16 ~18 GB，2B ~4 GB — 留余量
+            needs_gb = 20 if "9B" in self._model_name else 6
+            want_quantize = vram_gb < needs_gb
+
+        if want_quantize and device == "cuda":
+            try:
+                import bitsandbytes  # noqa: F401
+                from transformers import BitsAndBytesConfig
+                quantization_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16,
+                )
+                print("Using 4-bit quantization (bitsandbytes)", file=sys.stderr)
+            except ImportError:
+                if self._quantize is True:
+                    raise LocalModelError(
+                        "4-bit quantization requested but bitsandbytes is not installed.\n\n"
+                        "Install with: uv tool install \".[local-quantized]\""
+                    )
+        elif want_quantize and device != "cuda":
+            if self._quantize is True:
+                raise LocalModelError(
+                    "4-bit quantization requires CUDA (NVIDIA GPU). "
+                    f"Current device: {device}"
+                )
+
+        # dtype 与 quantization_config 二选一
+        load_kwargs = dict(trust_remote_code=True)
+        if quantization_config is not None:
+            load_kwargs["quantization_config"] = quantization_config
+        else:
+            load_kwargs["dtype"] = dtype
+
+        try:
+            self._processor = AutoProcessor.from_pretrained(
+                self._model_name, trust_remote_code=True,
+            )
+            self._model = AutoModel.from_pretrained(
+                self._model_name, **load_kwargs,
+            ).to(device).eval()
+            self._process_vision_info = process_vision_info
+            print(f"WeMM model loaded on {device}", file=sys.stderr)
+        except Exception as e:
+            raise LocalModelError(f"Failed to load {self._model_name}: {e}") from e
+
+    def _embed(self, messages, verbose=False, label="input"):
+        self._load_model()
+
+        import torch
+        import torch.nn.functional as F
+
+        t0 = time.monotonic()
+
+        text = self._processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=False,
+        )
+        images, videos, video_kwargs = self._process_vision_info(
+            messages,
+            image_patch_size=16,
+            return_video_kwargs=True,
+            return_video_metadata=True,
+        )
+        if videos is not None:
+            videos, video_metadata = zip(*videos)
+            videos, video_metadata = list(videos), list(video_metadata)
+        else:
+            video_metadata = None
+
+        inputs = self._processor(
+            text=text,
+            images=images,
+            videos=videos,
+            video_metadata=video_metadata,
+            return_tensors="pt",
+            **(video_kwargs or {}),
+        ).to(self._model.device)
+
+        with torch.inference_mode():
+            embedding = self._model.embedding(**inputs)  # WeMM 专用方法
+
+        # MRL 截断 + 重归一化
+        truncated = embedding[0][: self._dimensions]
+        truncated = F.normalize(truncated, p=2, dim=-1)
+        result = truncated.cpu().float().tolist()
+
+        if verbose:
+            print(
+                f"  [verbose] {label} embedding: dims={len(result)}, "
+                f"inference_time={time.monotonic() - t0:.2f}s",
+                file=sys.stderr,
+            )
+        return result
+
+    def embed_video_chunk(self, chunk_path: str, verbose: bool = False) -> list[float]:
+        from pathlib import Path
+
+        path = Path(chunk_path)
+        if not path.exists():
+            raise LocalModelError(f"Chunk file not found: {path}")
+        messages = [{
+            "role": "user",
+            "content": [
+                {
+                    "type": "video",
+                    "video": str(path.resolve()),
+                    "fps": 1.0,
+                    "max_frames": 32,
+                },
+                {"type": "text", "text": "Represent the video for retrieval."},
+            ],
+        }]
+        return self._embed(messages, verbose=verbose, label="video")
+
+    def embed_query(self, query_text: str, verbose: bool = False) -> list[float]:
+        messages = [{
+            "role": "user",
+            "content": [{"type": "text", "text": query_text}],
+        }]
+        return self._embed(messages, verbose=verbose, label="query")
+
+    def embed_image(self, image_path: str, verbose: bool = False) -> list[float]:
+        from pathlib import Path
+
+        path = Path(image_path)
+        if not path.exists():
+            raise LocalModelError(f"Image file not found: {path}")
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image", "image": str(path.resolve())},
+                {"type": "text", "text": "Retrieve videos relevant to the query."},
+            ],
+        }]
+        return self._embed(messages, verbose=verbose, label="image")
 
     def dimensions(self) -> int:
         return self._dimensions
