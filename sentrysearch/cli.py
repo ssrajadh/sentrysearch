@@ -27,7 +27,7 @@ _BACKEND_CHOICES = ["gemini", "litellm", "local", "local-tencent", "mlx", "qwen-
 # separates cleanly; 0.35 flags fewer good results than 0.41 and no fewer
 # unrelated ones.
 _DEFAULT_THRESHOLD = 0.41
-_BACKEND_THRESHOLDS = {"mlx": 0.35}
+_BACKEND_THRESHOLDS = {"mlx": 0.35, "local-tencent": 0.27}
 
 
 def _resolve_threshold(threshold: float | None, backend: str) -> float:
@@ -916,7 +916,7 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
               help="Save the top N matching clips instead of just the #1 result (e.g. --save-top 3).")
 @click.option("--threshold", default=None, type=float,
               help="Minimum similarity score to consider a confident match. "
-                   "[default: 0.41; 0.35 for --backend mlx]")
+                   "[default: 0.41; 0.35 for --backend mlx; 0.27 for --backend local-tencent]")
 @click.option("--overlay/--no-overlay", default=False, show_default=True,
               help="Burn Tesla telemetry overlay (speed, GPS, turn signals) onto trimmed clip.")
 @click.option("--backend", type=click.Choice(_BACKEND_CHOICES), default=None,
@@ -1169,7 +1169,7 @@ def _present_results(
               help="Save the top N matches as separate clips.")
 @click.option("--threshold", default=None, type=float,
               help="Minimum similarity score to consider a confident match. "
-                   "[default: 0.41; 0.35 for --backend mlx]")
+                   "[default: 0.41; 0.35 for --backend mlx; 0.27 for --backend local-tencent]")
 @click.option("--overlay/--no-overlay", default=False, show_default=True,
               help="Apply Tesla telemetry overlay to saved clips.")
 @click.option("--backend", type=click.Choice(_BACKEND_CHOICES), default=None,
@@ -1432,7 +1432,7 @@ def _print_shell_results(results, threshold):
               help="Number of results per query.")
 @click.option("--threshold", default=None, type=float,
               help="Minimum similarity score to consider a confident match. "
-                   "[default: 0.41; 0.35 for --backend mlx]")
+                   "[default: 0.41; 0.35 for --backend mlx; 0.27 for --backend local-tencent]")
 @click.option("--dedupe", "dedupe_threshold", default=0.9, show_default=True,
               type=float,
               help="Drop results whose cosine similarity to a higher-ranked "
