@@ -553,7 +553,7 @@ class LocalEmbedder_tencent(BaseEmbedder):
         except ImportError as e:
             raise LocalModelError(
                 f"Missing dependencies for WeMM backend: {e}\n\n"
-                "Install with: uv tool install \".[local]\"\n"
+                "Install with: uv tool install \".[local-tencent]\"\n"
                 "For 4-bit quantization: uv tool install \".[local-quantized]\""
             ) from e
 
@@ -635,9 +635,13 @@ class LocalEmbedder_tencent(BaseEmbedder):
             self._processor = AutoProcessor.from_pretrained(
                 self._model_name, trust_remote_code=True,
             )
-            self._model = AutoModel.from_pretrained(
+            model = AutoModel.from_pretrained(
                 self._model_name, **load_kwargs,
-            ).to(device).eval()
+            )
+            # 量化时 from_pretrained 已处理设备放置，再 .to() 会触发二次搬运
+            if quantization_config is None:
+                model = model.to(device)
+            self._model = model.eval()
             self._process_vision_info = process_vision_info
             print(f"WeMM model loaded on {device}", file=sys.stderr)
         except Exception as e:
@@ -675,8 +679,22 @@ class LocalEmbedder_tencent(BaseEmbedder):
             **(video_kwargs or {}),
         ).to(self._model.device)
 
+        # 视觉输入转成模型 dtype，避免 fp32 激活推高显存。
+        # input_ids / attention_mask 是整型，is_floating_point() 会跳过。
+        inputs = {
+            k: (v.to(self._model.dtype) if v.is_floating_point() else v)
+            for k, v in inputs.items()
+        }
+
         with torch.inference_mode():
             embedding = self._model.embedding(**inputs)  # WeMM 专用方法
+
+        if not torch.is_tensor(embedding):
+            raise LocalModelError(
+                "WeMM embedding() returned "
+                f"{type(embedding).__name__}, expected a Tensor. "
+                "The model's remote code may have changed."
+            )
 
         # MRL 截断 + 重归一化
         truncated = embedding[0][: self._dimensions]
