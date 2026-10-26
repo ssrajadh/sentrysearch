@@ -29,6 +29,15 @@ def get_embedder(backend: str = "gemini", **kwargs) -> BaseEmbedder:
             dims = kwargs.get("dimensions", 768)
             quantize = kwargs.get("quantize", None)
             _current_embedder = LocalEmbedder(model_name=model, dimensions=dims, quantize=quantize)
+        elif backend == "local-tencent":
+            from .local_embedder import LocalEmbedder_tencent
+            model = kwargs.get("model", "tencent9b")
+            if "dimensions" in kwargs:
+                dims = kwargs["dimensions"]
+            else:
+                dims = 4096 if "9b" in model.lower() else 2048
+            quantize = kwargs.get("quantize", None)
+            _current_embedder = LocalEmbedder_tencent(model_name=model, dimensions=dims, quantize=quantize)
         elif backend == "mlx":
             from .mlx_embedder import MLXEmbedder
             _current_embedder = MLXEmbedder(

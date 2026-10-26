@@ -42,6 +42,8 @@ def _collection_name(backend: str, model: str | None = None) -> str:
         slug = _chroma_collection_slug(model or default_litellm_model())
         return f"dashcam_chunks_litellm_{slug}"
     if model:
+        if backend == "local-tencent":
+            return f"dashcam_chunks_tencent_local_{model}"
         return f"dashcam_chunks_local_{model}"
     # Legacy: local backend without model distinction
     return "dashcam_chunks_local"
@@ -51,6 +53,7 @@ def _collection_name(backend: str, model: str | None = None) -> str:
 # point auto-selecting its index. Gemini and qwen-cloud need only core deps.
 _BACKEND_MODULES = {
     "local": ("torch",),
+    "local-tencent": ("torch",),
     "mlx": ("mlx", "mlx_vlm"),
     "litellm": ("litellm",),
 }
@@ -111,6 +114,14 @@ def _indexes_with_data(client):
                 if model is None:
                     model = name.removeprefix("dashcam_chunks_local_")
                 yield "local", model, name
+        elif name.startswith("dashcam_chunks_tencent_local_"):
+            col = client.get_collection(name)
+            if col.count() > 0:
+                meta = col.metadata or {}
+                model = meta.get("embedding_model")
+                if model is None:
+                    model = name.removeprefix("dashcam_chunks_tencent_local_")
+                yield "local-tencent", model, name
 
     # Legacy local collection (no model suffix) — treat as qwen8b
     if "dashcam_chunks_local" in existing:

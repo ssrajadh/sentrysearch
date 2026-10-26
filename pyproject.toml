@@ -25,10 +25,22 @@ local = [
     "torchcodec>=0.6",
 ]
 local-quantized = [
-    "torch>=2.0",
+    "av<19.0",
+	"torch>=2.0",
     "torchvision>=0.15,<0.22",
     # See the note in the `local` extra above.
     "transformers>=5.4",
+    "accelerate",
+    "qwen-vl-utils",
+    "torchcodec>=0.6",
+    "bitsandbytes",
+]
+local-tencent = [
+    "av<19.0",
+    "torch>=2.0",
+    "torchvision>=0.15,<0.22",
+    # Require by tencent/WeMM-Embedding-2B
+    "transformers==5.2.0",
     "accelerate",
     "qwen-vl-utils",
     "torchcodec>=0.6",
