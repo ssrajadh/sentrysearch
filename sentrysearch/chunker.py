@@ -384,8 +384,11 @@ def preprocess_chunk(
                 "-y",
                 "-i", chunk_path,
                 "-vf", f"scale=-2:{target_resolution},fps={target_fps}",
-                "-c:v", "libx264",
-                "-crf", "28",
+                "-c:v", "h264_nvenc",  # NVENC
+                "-cq", "28",  # NVENC
+                "-preset", "p5",  # NVENC
+                "-rc", "vbr",  # NVENC
+                "-b:v", "0",  # NVENC
                 "-c:a", "aac",
                 "-b:a", "64k",
                 out_path,
