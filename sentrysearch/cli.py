@@ -679,169 +679,139 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
         store = SentryStore(backend=backend, model=model)
         dlq = DeadLetterQueue()
         total_files = len(videos)
-        new_files = 0
-        new_chunks = 0
-        skipped_chunks = 0
-        dlq_chunks = 0
-        encrypted_files: list[str] = []
-        unreadable_files: list[tuple[str, str]] = []
 
         if verbose:
             click.echo(f"[verbose] DB path: {store._client._identifier}", err=True)
             click.echo(f"[verbose] backend={backend}, chunk_duration={chunk_duration}s, overlap={overlap}s", err=True)
 
-        for file_idx, video_path in enumerate(videos, 1):
-            abs_path = os.path.abspath(video_path)
-            basename = os.path.basename(video_path)
+        import queue
+        import threading
+        import time as _time
 
-            # Fast path: if every expected chunk ID is already in the store,
-            # skip ffmpeg splitting entirely. A mismatch (e.g. due to
-            # still-frame chunks that were skipped rather than stored) falls
-            # through to the normal path.
-            try:
-                duration = _get_video_duration(abs_path)
-                expected_spans = expected_chunk_spans(
-                    duration, chunk_duration=chunk_duration, overlap=overlap,
-                )
-                if expected_spans and all(
-                    store.has_chunk(store.make_chunk_id(abs_path, s))
-                    for s, _ in expected_spans
-                ):
-                    click.echo(
-                        f"Skipping ({file_idx}/{total_files}): {basename} "
-                        f"(already indexed)"
-                    )
-                    continue
-            except Exception:
-                # Duration probe failed — let chunk_video surface the error
-                pass
+        chunk_queue: "queue.Queue[object]" = queue.Queue(maxsize=4)
+        stop_event = threading.Event()
+        errors: list[Exception] = []
+        errors_lock = threading.Lock()
+        stats_lock = threading.Lock()
+        stats = {
+            "new_chunks": 0,
+            "skipped_chunks": 0,
+            "dlq_chunks": 0,
+            "new_files": set(),
+            "encrypted_files": [],
+            "unreadable_files": [],
+        }
+        tmp_dirs: list[str] = []
 
-            try:
-                chunks = chunk_video(abs_path, chunk_duration=chunk_duration, overlap=overlap)
-            except Exception:
-                # One file that won't open shouldn't end a run over thousands.
-                # chunk_video probes before creating its temp dir, so there is
-                # nothing to clean up here.
-                if is_tesla_encrypted(abs_path):
-                    encrypted_files.append(abs_path)
-                    click.echo(
-                        f"Skipping ({file_idx}/{total_files}): {basename} "
-                        f"(Tesla-encrypted clip)"
-                    )
-                else:
-                    reason = probe_error(abs_path)
-                    unreadable_files.append((abs_path, reason))
-                    click.secho(
-                        f"Skipping ({file_idx}/{total_files}): {basename} "
-                        f"(unreadable: {reason})",
-                        fg="yellow",
-                    )
-                continue
-            num_chunks = len(chunks)
-            file_new_chunks = 0
+        t_start = _time.monotonic()
+        prod = threading.Thread(
+            target=_produce_chunk_tasks,
+            args=(videos,),
+            kwargs=dict(
+                chunk_duration=chunk_duration,
+                overlap=overlap,
+                skip_still=skip_still,
+                preprocess=preprocess,
+                target_resolution=target_resolution,
+                target_fps=target_fps,
+                retry_failed=retry_failed,
+                store=store,
+                dlq=dlq,
+                task_queue=chunk_queue,
+                stop_event=stop_event,
+                tmp_dirs=tmp_dirs,
+                stats=stats,
+                stats_lock=stats_lock,
+                errors=errors,
+                errors_lock=errors_lock,
+                verbose=verbose,
+            ),
+            daemon=True,
+        )
+        cons = threading.Thread(
+            target=_consume_chunk_tasks,
+            args=(
+                embedder, store, dlq, chunk_queue, stop_event,
+                stats, stats_lock, errors, errors_lock, verbose,
+            ),
+            daemon=True,
+        )
+        prod.start()
+        cons.start()
+        prod.join()
+        cons.join()
+        elapsed = _time.monotonic() - t_start
 
-            if verbose:
-                click.echo(f"  [verbose] {basename}: duration split into {num_chunks} chunks", err=True)
+        for d in tmp_dirs:
+            shutil.rmtree(d, ignore_errors=True)
 
-            # Track files to clean up after processing
-            files_to_cleanup = []
+        if errors:
+            raise errors[0]
 
-            for chunk_idx, chunk in enumerate(chunks, 1):
-                chunk_id = store.make_chunk_id(abs_path, chunk["start_time"])
+        new_chunks = stats["new_chunks"]
+        new_files = len(stats["new_files"])
+        skipped_chunks = stats["skipped_chunks"]
+        dlq_chunks = stats["dlq_chunks"]
+        encrypted_files = stats["encrypted_files"]
+        unreadable_files = stats["unreadable_files"]
 
-                if store.has_chunk(chunk_id):
-                    if verbose:
-                        click.echo(
-                            f"  [verbose] chunk {chunk_idx}/{num_chunks} already indexed — resuming",
-                            err=True,
-                        )
-                    files_to_cleanup.append(chunk["chunk_path"])
-                    continue
+        if verbose:
+            click.echo(
+                f"[verbose] pipeline elapsed: {elapsed:.2f}s "
+                f"({new_chunks} chunks)",
+                err=True,
+            )
 
-                if dlq.contains(chunk_id):
-                    if retry_failed:
-                        dlq.remove(chunk_id)
-                        if verbose:
-                            click.echo(
-                                f"  [verbose] retrying DLQ'd chunk {chunk_idx}/{num_chunks}",
-                                err=True,
-                            )
-                    else:
-                        click.echo(
-                            f"Skipping chunk {chunk_idx}/{num_chunks} (in DLQ — "
-                            f"use --retry-failed to re-attempt)"
-                        )
-                        files_to_cleanup.append(chunk["chunk_path"])
-                        continue
-
-                if skip_still and is_still_frame_chunk(
-                    chunk["chunk_path"], verbose=verbose,
-                ):
-                    click.echo(
-                        f"Skipping chunk {chunk_idx}/{num_chunks} (still frame)"
-                    )
-                    skipped_chunks += 1
-                    files_to_cleanup.append(chunk["chunk_path"])
-                    continue
-
+        index_stats = store.get_stats()
+        parts = []
+        if skipped_chunks:
+            parts.append(f"skipped {skipped_chunks} still")
+        if dlq_chunks:
+            parts.append(f"{dlq_chunks} failed → DLQ")
+        if encrypted_files:
+            parts.append(f"{len(encrypted_files)} Tesla-encrypted skipped")
+        if unreadable_files:
+            parts.append(f"{len(unreadable_files)} unreadable skipped")
+        extra = f" ({', '.join(parts)})" if parts else ""
+        click.echo(
+            f"\nIndexed {new_chunks} new chunks from {new_files} files{extra}. "
+            f"Total: {index_stats['total_chunks']} chunks from "
+            f"{index_stats['unique_source_files']} files."
+        )
+        if dlq_chunks:
+            click.secho(
+                f"See `sentrysearch dlq list` for details. "
+                f"Retry with `sentrysearch index <dir> --retry-failed`.",
+                fg="yellow",
+            )
+        if encrypted_files:
+            click.secho(
+                f"\n{len(encrypted_files)} clip(s) are Tesla-encrypted. Tesla encrypts "
+                "dashcam clips when \"Encrypt Dashcam Recordings\" is on, and they "
+                "can't be indexed until they're decrypted:\n"
+                "  - in a browser at https://dashcam.tesla.com, which decrypts "
+                "on your computer, or\n"
+                "  - in the car's Dashcam app: select the clips and tap the padlock.\n"
+                "Then index the decrypted files. To save future clips unencrypted: "
+                "Controls > Safety > Encrypt Dashcam Recordings.",
+                fg="yellow",
+            )
+        if unreadable_files:
+            click.secho(
+                f"\n{len(unreadable_files)} file(s) couldn't be read and were skipped:",
+                fg="yellow",
+            )
+            for path, reason in unreadable_files[:5]:
+                click.echo(f"  {path}: {reason}")
+            if len(unreadable_files) > 5:
+                click.echo(f"  ... and {len(unreadable_files) - 5} more")
+            if any("Operation not permitted" in r for _, r in unreadable_files):
                 click.echo(
-                    f"Indexing file {file_idx}/{total_files}: {basename} "
-                    f"[chunk {chunk_idx}/{num_chunks}]"
+                    "  \"Operation not permitted\" means macOS is blocking access to "
+                    "that folder. Allow your terminal under System Settings > "
+                    "Privacy & Security > Files and Folders, or move the footage "
+                    "out of Downloads, Desktop or Documents."
                 )
-
-                embed_path = chunk["chunk_path"]
-                if preprocess:
-                    original_size = os.path.getsize(embed_path)
-                    embed_path = preprocess_chunk(
-                        embed_path,
-                        target_resolution=target_resolution,
-                        target_fps=target_fps,
-                    )
-                    if verbose:
-                        new_size = os.path.getsize(embed_path)
-                        click.echo(
-                            f"    [verbose] preprocess: {original_size / 1024:.0f}KB -> "
-                            f"{new_size / 1024:.0f}KB "
-                            f"({100 * (1 - new_size / original_size):.0f}% reduction)",
-                            err=True,
-                        )
-                    if embed_path != chunk["chunk_path"]:
-                        files_to_cleanup.append(embed_path)
-
-                embedding = _embed_with_retry(
-                    embedder, embed_path,
-                    {
-                        "chunk_id": chunk_id,
-                        "source_file": abs_path,
-                        "start_time": chunk["start_time"],
-                        "end_time": chunk["end_time"],
-                    },
-                    dlq, verbose=verbose,
-                )
-                files_to_cleanup.append(chunk["chunk_path"])
-                if embedding is None:
-                    dlq_chunks += 1
-                    continue
-                store.add_chunk(chunk_id, embedding, {
-                    "source_file": abs_path,
-                    "start_time": chunk["start_time"],
-                    "end_time": chunk["end_time"],
-                })
-                file_new_chunks += 1
-
-            for f in files_to_cleanup:
-                try:
-                    os.unlink(f)
-                except OSError:
-                    pass
-
-            if chunks:
-                tmp_dir = os.path.dirname(chunks[0]["chunk_path"])
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-
-            if file_new_chunks:
-                new_files += 1
-                new_chunks += file_new_chunks
 
         stats = store.get_stats()
         parts = []
@@ -898,6 +868,264 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
         _handle_error(e)
     finally:
         reset_embedder()
+
+
+
+_SENTINEL = object()
+
+
+def _record_error(stop_event, errors, lock, exc):
+    """Record a fatal error and signal both threads to stop."""
+    with lock:
+        errors.append(exc)
+    stop_event.set()
+
+
+def _produce_chunk_tasks(
+    videos, *, chunk_duration, overlap, skip_still, preprocess,
+    target_resolution, target_fps, retry_failed,
+    store, dlq, task_queue, stop_event, tmp_dirs, stats, stats_lock,
+    errors, errors_lock, verbose,
+):
+    """Producer: split each file, run still-detection/preprocess, enqueue tasks."""
+    import queue as _queue
+
+    from .chunker import (
+        _get_video_duration,
+        chunk_video,
+        expected_chunk_spans,
+        is_still_frame_chunk,
+        is_tesla_encrypted,
+        preprocess_chunk,
+        probe_error,
+    )
+
+    try:
+        for file_idx, video_path in enumerate(videos, 1):
+            if stop_event.is_set():
+                return
+            abs_path = os.path.abspath(video_path)
+            basename = os.path.basename(video_path)
+
+            # Fast path: skip the whole file if every expected chunk exists.
+            try:
+                duration = _get_video_duration(abs_path)
+                expected_spans = expected_chunk_spans(
+                    duration, chunk_duration=chunk_duration, overlap=overlap,
+                )
+                if expected_spans and all(
+                    store.has_chunk(store.make_chunk_id(abs_path, s))
+                    for s, _ in expected_spans
+                ):
+                    click.echo(
+                        f"Skipping ({file_idx}/{len(videos)}): {basename} "
+                        f"(already indexed)"
+                    )
+                    continue
+            except Exception:
+                pass
+
+            try:
+                chunks = chunk_video(
+                    abs_path, chunk_duration=chunk_duration, overlap=overlap,
+                )
+            except Exception:
+                if is_tesla_encrypted(abs_path):
+                    with stats_lock:
+                        stats["encrypted_files"].append(abs_path)
+                    click.echo(
+                        f"Skipping ({file_idx}/{len(videos)}): {basename} "
+                        f"(Tesla-encrypted clip)"
+                    )
+                else:
+                    reason = probe_error(abs_path)
+                    with stats_lock:
+                        stats["unreadable_files"].append((abs_path, reason))
+                    click.secho(
+                        f"Skipping ({file_idx}/{len(videos)}): {basename} "
+                        f"(unreadable: {reason})",
+                        fg="yellow",
+                    )
+                continue
+
+            # Register the temp dir immediately so the main thread can
+            # clean it up even if the producer stops mid-file.
+            if chunks:
+                tmp_dirs.append(os.path.dirname(chunks[0]["chunk_path"]))
+
+            num_chunks = len(chunks)
+            if verbose:
+                click.echo(
+                    f"  [verbose] {basename}: split into {num_chunks} chunks",
+                    err=True,
+                )
+
+            for chunk_idx, chunk in enumerate(chunks, 1):
+                if stop_event.is_set():
+                    return
+                chunk_id = store.make_chunk_id(abs_path, chunk["start_time"])
+
+                if store.has_chunk(chunk_id):
+                    if verbose:
+                        click.echo(
+                            f"  [verbose] chunk {chunk_idx}/{num_chunks} "
+                            f"already indexed — resuming",
+                            err=True,
+                        )
+                    os.unlink(chunk["chunk_path"])
+                    continue
+
+                if dlq.contains(chunk_id):
+                    if retry_failed:
+                        dlq.remove(chunk_id)
+                        if verbose:
+                            click.echo(
+                                f"  [verbose] retrying DLQ'd chunk "
+                                f"{chunk_idx}/{num_chunks}",
+                                err=True,
+                            )
+                    else:
+                        click.echo(
+                            f"Skipping chunk {chunk_idx}/{num_chunks} (in DLQ — "
+                            f"use --retry-failed to re-attempt)"
+                        )
+                        os.unlink(chunk["chunk_path"])
+                        continue
+
+                if skip_still and is_still_frame_chunk(
+                    chunk["chunk_path"], verbose=verbose,
+                ):
+                    click.echo(
+                        f"Skipping chunk {chunk_idx}/{num_chunks} (still frame)"
+                    )
+                    with stats_lock:
+                        stats["skipped_chunks"] += 1
+                    os.unlink(chunk["chunk_path"])
+                    continue
+
+                embed_path = chunk["chunk_path"]
+                if preprocess:
+                    embed_path = preprocess_chunk(
+                        embed_path,
+                        target_resolution=target_resolution,
+                        target_fps=target_fps,
+                    )
+
+                cleanup = [chunk["chunk_path"]]
+                if embed_path != chunk["chunk_path"]:
+                    cleanup.append(embed_path)
+
+                task = {
+                    "chunk_id": chunk_id,
+                    "source_file": abs_path,
+                    "start_time": chunk["start_time"],
+                    "end_time": chunk["end_time"],
+                    "embed_path": embed_path,
+                    "cleanup": cleanup,
+                    # 进度显示用
+                    "file_idx": file_idx,
+                    "total_files": len(videos),
+                    "basename": basename,
+                    "chunk_idx": chunk_idx,
+                    "num_chunks": num_chunks,
+                }
+
+                # Blocking put, but bounded: if the consumer has already
+                # stopped, drop the task and clean up instead of hanging.
+                while not stop_event.is_set():
+                    try:
+                        task_queue.put(task, timeout=0.5)
+                        break
+                    except _queue.Full:
+                        continue
+                else:
+                    for p in cleanup:
+                        try:
+                            os.unlink(p)
+                        except OSError:
+                            pass
+                    return
+    except Exception as e:
+        _record_error(stop_event, errors, errors_lock, e)
+    finally:
+        # Unblock the consumer even on error/early return.
+        try:
+            task_queue.put(_SENTINEL, timeout=1.0)
+        except _queue.Full:
+            pass
+
+
+def _consume_chunk_tasks(
+    embedder, store, dlq, task_queue, stop_event,
+    stats, stats_lock, errors, errors_lock, verbose,
+):
+    """Consumer: embed each enqueued task, write to the store, clean up files."""
+    from .gemini_embedder import GeminiAPIKeyError, GeminiQuotaError
+    from .litellm_embedder import LiteLLMConfigError, LiteLLMQuotaError
+
+    while True:
+        task = task_queue.get()
+        if task is _SENTINEL:
+            break
+
+        if stop_event.is_set():
+            for p in task["cleanup"]:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+            continue
+
+        click.echo(
+            f"Indexing file {task['file_idx']}/{task['total_files']}: "
+            f"{task['basename']} "
+            f"[chunk {task['chunk_idx']}/{task['num_chunks']}]"
+        )
+
+        try:
+            embedding = _embed_with_retry(
+                embedder,
+                task["embed_path"],
+                {
+                    "chunk_id": task["chunk_id"],
+                    "source_file": task["source_file"],
+                    "start_time": task["start_time"],
+                    "end_time": task["end_time"],
+                },
+                dlq,
+                verbose=verbose,
+            )
+        except (GeminiQuotaError, GeminiAPIKeyError,
+                LiteLLMConfigError, LiteLLMQuotaError) as e:
+            _record_error(stop_event, errors, errors_lock, e)
+            break
+        except Exception as e:
+            # Unexpected error: fail this task, not the whole run.
+            _record_error(stop_event, errors, errors_lock, e)
+            break
+        else:
+            if embedding is None:
+                with stats_lock:
+                    stats["dlq_chunks"] += 1
+            else:
+                store.add_chunk(
+                    task["chunk_id"],
+                    embedding,
+                    {
+                        "source_file": task["source_file"],
+                        "start_time": task["start_time"],
+                        "end_time": task["end_time"],
+                    },
+                )
+                with stats_lock:
+                    stats["new_chunks"] += 1
+                    stats["new_files"].add(task["source_file"])
+        finally:
+            for p in task["cleanup"]:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
 
 
 # -----------------------------------------------------------------------
