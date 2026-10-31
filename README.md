@@ -548,7 +548,7 @@ These flags affect chunking and preprocessing for **both** Gemini and qwen-cloud
 The local backend may print warnings during indexing and search. These are cosmetic and don't affect results:
 
 - **`MPS: nonzero op is not natively supported`** — A known PyTorch limitation on Apple Silicon. The operation falls back to CPU for one step; everything else stays on the GPU. No impact on output quality.
-- **`video_reader_backend torchcodec error, use torchvision as default`** — torchcodec can't find a compatible FFmpeg on macOS. The video processor falls back to torchvision automatically. This is expected and produces identical results.
+- **`video_reader_backend torchcodec error, use torchvision as default`** — torchcodec can't find a compatible FFmpeg on macOS. The video processor falls back to torchvision automatically. This is expected and produces identical results. The fallback only works with PyAV below 19, which the local extras pin. If every embed fails with `open() got an unexpected keyword argument 'metadata_errors'`, PyAV was upgraded past that pin; downgrade it with `pip install "av<19"`.
 - **`You are sending unauthenticated requests to the HF Hub`** — The model downloads from Hugging Face without a token. Download speeds may be slightly lower, but the model loads fine. Set a `HF_TOKEN` environment variable to silence this if it bothers you.
 
 ## Limitations & Future Work
