@@ -73,6 +73,10 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["sentrysearch"]
 
+[tool.hatch.build.targets.sdist]
+# Repo-side benchmark tooling — importable from a checkout, not shipped.
+exclude = ["benchmarks/"]
+
 [dependency-groups]
 test = [
     "pytest>=7.0",

@@ -291,20 +291,6 @@ def _overlay_output_path(path: str) -> str:
     return f"{base}_overlay.mp4"
 
 
-def _is_permanent_failure(exc: Exception) -> bool:
-    """Return True for errors that won't resolve by retrying the same chunk."""
-    msg = str(exc).lower()
-    if isinstance(exc, FileNotFoundError):
-        return True
-    # OOM — same chunk at same settings will OOM again
-    if "out of memory" in msg or "cuda out of memory" in msg:
-        return True
-    # Decoder failures on specific files
-    if "invalid data" in msg or "could not decode" in msg:
-        return True
-    return False
-
-
 def _embed_with_retry(
     embedder,
     embed_path: str,
@@ -314,52 +300,47 @@ def _embed_with_retry(
     max_attempts: int = 3,
     verbose: bool = False,
 ) -> list[float] | None:
-    """Embed a chunk with retries. On permanent/exhausted failure, record
-    to the DLQ and return None so the caller can continue.
+    """Embed a chunk through the shared retry loop (see ``embedder``).
+
+    On permanent or exhausted failure the helper hands the error to
+    ``on_failure``, which records the chunk to the DLQ and returns None so
+    the caller can continue.
 
     Quota errors bubble up — the user needs to stop and wait.
     """
-    import time as _time
-    from .gemini_embedder import GeminiAPIKeyError, GeminiQuotaError
-    from .litellm_embedder import LiteLLMConfigError, LiteLLMQuotaError
+    from .embedder import embed_with_retry
 
-    chunk_id = chunk["chunk_id"]
-    last_exc: Exception | None = None
-    for attempt in range(1, max_attempts + 1):
-        try:
-            return embedder.embed_video_chunk(embed_path, verbose=verbose)
-        except (GeminiQuotaError, GeminiAPIKeyError,
-                LiteLLMConfigError, LiteLLMQuotaError):
-            raise  # user-facing, stop the run
-        except Exception as exc:
-            last_exc = exc
-            if _is_permanent_failure(exc) or attempt == max_attempts:
-                dlq.record(
-                    chunk_id,
-                    source_file=chunk["source_file"],
-                    start_time=chunk["start_time"],
-                    end_time=chunk["end_time"],
-                    error=repr(exc),
-                    attempts=attempt,
-                )
-                click.secho(
-                    f"  Failed after {attempt} attempt(s), recorded to DLQ: {exc}",
-                    fg="yellow",
-                    err=True,
-                )
-                return None
-            wait = 2 ** attempt
-            click.secho(
-                f"  Embed error (attempt {attempt}/{max_attempts}), "
-                f"retrying in {wait}s: {exc}",
-                fg="yellow",
-                err=True,
-            )
-            _time.sleep(wait)
-    # unreachable — loop always returns or records
-    if last_exc is not None:
-        raise last_exc
-    return None
+    def report_retry(attempt: int, exc: Exception, wait: int) -> None:
+        click.secho(
+            f"  Embed error (attempt {attempt}/{max_attempts}), "
+            f"retrying in {wait}s: {exc}",
+            fg="yellow",
+            err=True,
+        )
+
+    def record_failure(attempt: int, exc: Exception) -> None:
+        dlq.record(
+            chunk["chunk_id"],
+            source_file=chunk["source_file"],
+            start_time=chunk["start_time"],
+            end_time=chunk["end_time"],
+            error=repr(exc),
+            attempts=attempt,
+        )
+        click.secho(
+            f"  Failed after {attempt} attempt(s), recorded to DLQ: {exc}",
+            fg="yellow",
+            err=True,
+        )
+
+    return embed_with_retry(
+        embedder,
+        embed_path,
+        max_attempts=max_attempts,
+        verbose=verbose,
+        on_retry=report_retry,
+        on_failure=record_failure,
+    )
 
 
 def _handle_error(e: Exception) -> None:
@@ -600,8 +581,12 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
         scan_directory,
     )
     from .dlq import DeadLetterQueue
-    from .embedder import get_embedder, reset_embedder
-    from .local_embedder import detect_default_model, normalize_model_key
+    from .embedder import (
+        get_embedder,
+        reset_embedder,
+        resolve_backend,
+        resolve_model,
+    )
     from .store import SentryStore
 
     try:
@@ -612,13 +597,7 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
                 param_hint="'--overlap'",
             )
 
-        # --model implies --backend local; --dashscope-model implies qwen-cloud
-        if model is not None and backend is None:
-            backend = "local"
-        if dashscope_model is not None and backend is None:
-            backend = "qwen-cloud"
-        if backend is None:
-            backend = "gemini"
+        backend = resolve_backend(backend, model, dashscope_model)
 
         if dry_run:
             # Exit before model resolution, embedder construction, store
@@ -631,25 +610,13 @@ def index(directory, chunk_duration, overlap, preprocess, target_resolution,
             )
             return
 
-        if backend == "qwen-cloud":
-            model = dashscope_model or default_dashscope_embedding_model()
-        elif backend == "mlx":
-            # Resolve now rather than inside the embedder, so the full
-            # reference lands in the collection metadata and a later search
-            # can reload the same model.
-            from .mlx_embedder import resolve_model_ref
-            model = resolve_model_ref(model)
-        elif backend == "litellm":
-            from .litellm_embedder import default_litellm_model
-            model = model or default_litellm_model()
-        elif backend == "local":
-            # Auto-detect model from hardware when using local backend
-            if model is None:
-                model = detect_default_model()
-                click.echo(f"Auto-detected model: {model}", err=True)
-            model = normalize_model_key(model)
-        else:
-            model = None
+        # Resolve now rather than inside the embedder, so the full model
+        # reference lands in the collection metadata and a later search can
+        # reload the same model.
+        model = resolve_model(
+            backend, model, dashscope_model,
+            echo=lambda msg: click.echo(msg, err=True),
+        )
 
         embedder = get_embedder(backend, model=model, quantize=quantize, rpm=rpm)
 

@@ -18,11 +18,16 @@ from sentrysearch.gemini_embedder import (
     reset_limiter,
 )
 from sentrysearch.embedder import (
+    default_dashscope_embedding_model,
     embed_image,
     embed_query,
     embed_video_chunk,
+    embed_with_retry,
     get_embedder,
+    is_permanent_failure,
     reset_embedder,
+    resolve_backend,
+    resolve_model,
 )
 
 
@@ -333,3 +338,183 @@ class TestQuotaMessage:
         msg = _quota_message(raw.lower())
         assert "--rpm will not help" in msg
         assert "midnight Pacific" in msg
+
+
+# ---------------------------------------------------------------------------
+# Shared backend/model resolution — `sentrysearch index` and
+# benchmarks/accuracy_eval.py must agree on what a flag pair means (issue #78)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveBackendModel:
+    def test_explicit_backend_wins(self):
+        assert resolve_backend("mlx", "qwen2b", "qc-model") == "mlx"
+
+    def test_model_implies_local(self):
+        assert resolve_backend(None, "qwen2b") == "local"
+
+    def test_dashscope_model_implies_qwen_cloud(self):
+        assert resolve_backend(None, None, "qc-model") == "qwen-cloud"
+
+    def test_defaults_to_gemini(self):
+        assert resolve_backend() == "gemini"
+
+    def test_gemini_ignores_model(self):
+        assert resolve_model("gemini", "qwen8b") is None
+
+    def test_local_normalizes_hf_id(self):
+        assert resolve_model("local", "Qwen/Qwen3-VL-Embedding-2B") == "qwen2b"
+
+    def test_local_autodetect_reports_through_echo(self):
+        with patch("sentrysearch.local_embedder.detect_default_model",
+                   return_value="qwen8b"):
+            echoed = []
+            assert resolve_model("local", echo=echoed.append) == "qwen8b"
+        assert echoed == ["Auto-detected model: qwen8b"]
+
+    def test_local_autodetect_is_silent_without_echo(self):
+        with patch("sentrysearch.local_embedder.detect_default_model",
+                   return_value="qwen8b"):
+            assert resolve_model("local") == "qwen8b"
+
+    def test_qwen_cloud_prefers_dashscope_flag(self):
+        assert resolve_model("qwen-cloud", "ignored", "qc-model") == "qc-model"
+
+    def test_qwen_cloud_ignores_the_model_flag(self):
+        """qwen-cloud reads --dashscope-model only; generic --model is for
+        local/mlx/litellm, never for DashScope (CLI parity)."""
+        assert (resolve_model("qwen-cloud", "qc-model")
+                == default_dashscope_embedding_model())
+
+    def test_qwen_cloud_falls_back_to_provider_default(self):
+        assert (resolve_model("qwen-cloud")
+                == default_dashscope_embedding_model())
+
+    def test_litellm_uses_model_flag(self):
+        assert resolve_model("litellm", "my-model") == "my-model"
+
+    def test_litellm_falls_back_to_default(self):
+        from sentrysearch.litellm_embedder import default_litellm_model
+
+        assert resolve_model("litellm") == default_litellm_model()
+
+    def test_mlx_resolves_the_full_model_reference(self):
+        from sentrysearch.mlx_embedder import resolve_model_ref
+
+        assert resolve_model("mlx") == resolve_model_ref(None)
+
+
+# ---------------------------------------------------------------------------
+# Shared index-time retry policy (CLI + accuracy evaluation, issue #78)
+# ---------------------------------------------------------------------------
+
+
+class _ScriptedEmbedder:
+    """Yields each scripted outcome in order (a result, or an exception)."""
+
+    def __init__(self, *outcomes):
+        self._outcomes = list(outcomes)
+        self.calls = 0
+
+    def embed_video_chunk(self, path, verbose=False):
+        self.calls += 1
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+class TestEmbedWithRetry:
+    @pytest.fixture(autouse=True)
+    def no_backoff(self, monkeypatch):
+        """Record sleeps instead of waiting out the backoff."""
+        sleeps = []
+        monkeypatch.setattr(time, "sleep", sleeps.append)
+        return sleeps
+
+    def test_returns_after_a_transient_failure(self, no_backoff):
+        embedder = _ScriptedEmbedder(RuntimeError("429"), [0.5])
+        assert embed_with_retry(embedder, "chunk.mp4") == [0.5]
+        assert embedder.calls == 2
+        assert no_backoff == [2]
+
+    def test_raises_the_last_error_when_attempts_run_out(self, no_backoff):
+        embedder = _ScriptedEmbedder(*[RuntimeError("boom")] * 3)
+        with pytest.raises(RuntimeError, match="boom"):
+            embed_with_retry(embedder, "chunk.mp4")
+        assert embedder.calls == 3
+        assert no_backoff == [2, 4]
+
+    def test_on_retry_reports_each_wait(self, no_backoff):
+        embedder = _ScriptedEmbedder(RuntimeError("boom"), [0.5])
+        reports = []
+        embed_with_retry(
+            embedder, "chunk.mp4",
+            on_retry=lambda attempt, exc, wait: reports.append(
+                (attempt, str(exc), wait)),
+        )
+        assert reports == [(1, "boom", 2)]
+
+    def test_permanent_failure_is_not_retried(self, no_backoff):
+        embedder = _ScriptedEmbedder(FileNotFoundError("gone"))
+        failures = []
+        result = embed_with_retry(
+            embedder, "chunk.mp4",
+            on_failure=lambda attempt, exc: failures.append(attempt),
+        )
+        assert result is None
+        assert embedder.calls == 1
+        assert failures == [1]
+        assert no_backoff == []
+
+    def test_exhausted_retries_hand_error_to_on_failure(self, no_backoff):
+        embedder = _ScriptedEmbedder(*[RuntimeError("boom")] * 3)
+        failures = []
+        result = embed_with_retry(
+            embedder, "chunk.mp4",
+            on_failure=lambda attempt, exc: failures.append(
+                (attempt, str(exc))),
+        )
+        assert result is None
+        assert failures == [(3, "boom")]
+        assert no_backoff == [2, 4]
+
+    def test_without_on_failure_the_error_propagates(self, no_backoff):
+        """The accuracy evaluation must not silently drop a chunk."""
+        embedder = _ScriptedEmbedder(FileNotFoundError("gone"))
+        with pytest.raises(FileNotFoundError):
+            embed_with_retry(embedder, "chunk.mp4")
+
+    def test_quota_error_stops_the_run_immediately(self, no_backoff):
+        embedder = _ScriptedEmbedder(GeminiQuotaError("daily quota"), [0.5])
+        with pytest.raises(GeminiQuotaError):
+            embed_with_retry(embedder, "chunk.mp4")
+        assert embedder.calls == 1
+        assert no_backoff == []
+
+    def test_zero_max_attempts_is_rejected(self, no_backoff):
+        embedder = _ScriptedEmbedder([0.5])
+        with pytest.raises(ValueError, match="max_attempts must be >= 1"):
+            embed_with_retry(embedder, "chunk.mp4", max_attempts=0)
+        assert embedder.calls == 0
+
+    def test_negative_max_attempts_is_rejected(self, no_backoff):
+        embedder = _ScriptedEmbedder([0.5])
+        with pytest.raises(ValueError, match="max_attempts must be >= 1"):
+            embed_with_retry(embedder, "chunk.mp4", max_attempts=-3)
+        assert embedder.calls == 0
+        assert no_backoff == []
+
+
+@pytest.mark.parametrize(
+    "exc,permanent",
+    [
+        (FileNotFoundError("nope"), True),
+        (RuntimeError("CUDA out of memory"), True),
+        (RuntimeError("invalid data"), True),
+        (RuntimeError("could not decode frame"), True),
+        (RuntimeError("connection reset"), False),
+    ],
+)
+def test_is_permanent_failure(exc, permanent):
+    assert is_permanent_failure(exc) is permanent
