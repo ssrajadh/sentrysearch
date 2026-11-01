@@ -380,8 +380,11 @@ class TestResolveBackendModel:
     def test_qwen_cloud_prefers_dashscope_flag(self):
         assert resolve_model("qwen-cloud", "ignored", "qc-model") == "qc-model"
 
-    def test_qwen_cloud_falls_back_to_model_flag(self):
-        assert resolve_model("qwen-cloud", "qc-model") == "qc-model"
+    def test_qwen_cloud_ignores_the_model_flag(self):
+        """qwen-cloud reads --dashscope-model only; generic --model is for
+        local/mlx/litellm, never for DashScope (CLI parity)."""
+        assert (resolve_model("qwen-cloud", "qc-model")
+                == default_dashscope_embedding_model())
 
     def test_qwen_cloud_falls_back_to_provider_default(self):
         assert (resolve_model("qwen-cloud")

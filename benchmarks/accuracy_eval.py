@@ -28,6 +28,8 @@ Usage (from the repo root, with the desired backend extras installed):
 
     uv run python benchmarks/accuracy_eval.py --backend local --model qwen8b
     uv run python benchmarks/accuracy_eval.py --backend gemini
+    uv run python benchmarks/accuracy_eval.py \
+        --backend qwen-cloud --dashscope-model qwen3-vl-embedding
 
 Not a user-facing CLI command — see CONTRIBUTING.md; this is a dev tool.
 Judgments accumulate in tests/data/accuracy_judgments.json and are meant to
@@ -211,25 +213,19 @@ def _verify_clip_identity(
     recorded = meta if isinstance(meta, dict) else {}
     missing = [field for field in _IDENTITY_FIELDS if field not in recorded]
     if missing:
-        expected_text = ", ".join(f"{k}={v}" for k, v in expected.items())
         raise AccuracyEvalError(
             f"Judgment cache {path} holds {verdict_count} verdict(s) but no "
-            f"clip identity ({', '.join(missing)} missing from the "
-            f"{_META_KEY!r} entry), so it cannot be verified against the clip "
-            f"being evaluated ({expected_text}). Judgments "
-            "from an unverified clip are never reused. Either delete the cache "
-            "to start fresh, or record the current clip's identity at the "
-            f"file's top level:\n  {json.dumps({_META_KEY: expected})}"
+            f"clip identity ({', '.join(missing)} missing from {_META_KEY!r}), "
+            "so it cannot be verified. Delete the cache to start fresh, or "
+            f"record the current clip's identity at its top level:\n"
+            f"  {json.dumps({_META_KEY: expected})}"
         )
     if any(recorded[field] != expected[field] for field in _IDENTITY_FIELDS):
         raise AccuracyEvalError(
-            f"Judgment cache {path} was judged against a different clip "
-            "than the one being evaluated.\n"
+            f"Judgment cache {path} was judged against a different clip.\n"
             f"  cache: {_format_identity(recorded)}\n"
             f"  clip:  {_format_identity(expected)}\n"
-            "Reusing those judgments would corrupt the evaluation. Point "
-            "--clip at the judged clip, or move/delete the cache file to "
-            "start fresh."
+            "Point --clip at the judged clip, or move/delete the cache file."
         )
 
 
@@ -485,12 +481,9 @@ def prepare_accuracy_store(
         existing = client.get_collection(ACCURACY_COLLECTION)
         if not (existing.metadata or {}).get(EVAL_MARKER_KEY):
             raise AccuracyEvalError(
-                f"Collection {ACCURACY_COLLECTION!r} already exists in {db_path} "
-                "but was not created by this evaluation (no ownership marker). "
-                "Refusing to modify or delete it. If it is a stale leftover, "
-                f"delete it manually: sentrysearch reset does not cover it, "
-                f"remove the {ACCURACY_COLLECTION!r} collection from "
-                f"{db_path} yourself, then re-run."
+                f"Collection {ACCURACY_COLLECTION!r} exists in {db_path} "
+                "without this evaluation's ownership marker — not touching "
+                "it. Delete it manually if it is a stale leftover, then re-run."
             )
         client.delete_collection(ACCURACY_COLLECTION)
 
@@ -532,49 +525,6 @@ def cleanup_accuracy_collection(db_path: str | Path) -> bool:
         return False
     client.delete_collection(ACCURACY_COLLECTION)
     return True
-
-
-def teardown_accuracy_run(
-    db_path: str | Path,
-    *,
-    err=sys.stderr,
-    suppress: bool = False,
-) -> None:
-    """Reset the embedder and delete the throwaway eval collection.
-
-    Cleanup always runs, even when the embedder reset fails, so an
-    interrupted run can never leak the ``accuracy_eval`` collection.
-
-    With *suppress*, every teardown failure is reported to *err* and
-    swallowed — used while an evaluation exception is already unwinding,
-    so a teardown problem cannot mask the more important failure. Without
-    it, the first teardown failure is re-raised (any later one is still
-    reported, not lost).
-    """
-    failures: list[tuple[str, Exception]] = []
-    try:
-        reset_embedder()
-    except Exception as exc:
-        failures.append(("embedder reset", exc))
-    try:
-        cleanup_accuracy_collection(db_path)
-    except Exception as exc:
-        failures.append(("collection cleanup", exc))
-    if not failures:
-        return
-    if suppress:
-        for step, exc in failures:
-            print(
-                f"warning: {step} failed during evaluation teardown: {exc!r}",
-                file=err,
-            )
-        return
-    for step, exc in failures[1:]:
-        print(
-            f"warning: {step} failed during evaluation teardown: {exc!r}",
-            file=err,
-        )
-    raise failures[0][1]
 
 
 # --------------------------------------------------------------------------
@@ -768,6 +718,7 @@ def run_evaluation(
     *,
     backend: str | None = None,
     model: str | None = None,
+    dashscope_model: str | None = None,
     clip_path: str | Path | None = None,
     db_path: str | Path = DEFAULT_DB_PATH,
     judgments_path: str | Path = DEFAULT_JUDGMENTS_PATH,
@@ -781,16 +732,21 @@ def run_evaluation(
     """Run the full evaluation and return the markdown report (or None).
 
     Loads the embedder once, indexes the benchmark clip into the throwaway
-    ``accuracy_eval`` collection (always cleaned up, including when the
-    teardown itself fails), retrieves top-5 per query, consults/prompts for
-    judgments bound to the clip's identity, and prints a per-group
-    comparison table.
+    ``accuracy_eval`` collection (always cleaned up afterwards, failure or
+    not), retrieves top-5 per query, consults/prompts for judgments bound
+    to the clip's identity, and prints a per-group comparison table.
     """
     workload = list(WORKLOAD if workload is None else workload)
     # Same flag resolution as `sentrysearch index`, so both entry points
-    # agree on which backend/model a given --backend/--model pair selects.
-    backend = resolve_backend(backend, model)
-    model = resolve_model(backend, model)
+    # agree on what --backend/--model/--dashscope-model select — including
+    # index's rule that --model and --dashscope-model are mutually exclusive.
+    if model is not None and dashscope_model is not None:
+        raise AccuracyEvalError(
+            "Use only one of --model (local backend) or --dashscope-model "
+            "(qwen-cloud / DashScope), not both."
+        )
+    backend = resolve_backend(backend, model, dashscope_model)
+    model = resolve_model(backend, model, dashscope_model)
 
     if not workload:
         print("Workload is empty — nothing to evaluate.", file=err)
@@ -811,12 +767,14 @@ def run_evaluation(
             input_fn=input_fn, out=out, err=err,
             clip_path=clip, clip_identity=identity,
         )
-    except BaseException:
-        # The evaluation's own failure (or a Ctrl-C) is the important one:
-        # report teardown problems instead of letting them mask it.
-        teardown_accuracy_run(db_path, err=err, suppress=True)
-        raise
-    teardown_accuracy_run(db_path)
+    finally:
+        # Plain teardown: drop the ownership-checked throwaway collection
+        # first, so an embedder-reset failure can never leak it, then reset
+        # the embedder — which still runs even if the cleanup raised.
+        try:
+            cleanup_accuracy_collection(db_path)
+        finally:
+            reset_embedder()
 
     report = format_report(label, scored)
     print(report, file=out)
@@ -846,7 +804,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         default=None,
         help="Model name (local: qwen8b/qwen2b/HF id, default: auto-detect; "
-             "qwen-cloud/litellm: provider model name).",
+             "litellm: provider model name). Ignored for qwen-cloud — use "
+             "--dashscope-model there.",
+    )
+    parser.add_argument(
+        "--dashscope-model",
+        default=None,
+        help="DashScope embedding model for the qwen-cloud backend "
+             "(default: provider default).",
     )
     parser.add_argument(
         "--quantize",
@@ -876,6 +841,7 @@ def main(argv: list[str] | None = None) -> int:
         run_evaluation(
             backend=args.backend,
             model=args.model,
+            dashscope_model=args.dashscope_model,
             clip_path=args.clip,
             judgments_path=args.judgments,
             quantize=args.quantize,
@@ -895,9 +861,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except EOFError:
         print(
-            "Error: interactive judgment input ended unexpectedly (EOF). "
-            "Run in a terminal, or pre-populate the judgment cache "
-            "(--judgments) so no prompts are needed.",
+            "Error: judgment prompt input ended (EOF). Run in a terminal, or "
+            "pre-populate the judgment cache (--judgments) so no prompts are "
+            "needed.",
             file=sys.stderr,
         )
         return 1

@@ -538,70 +538,6 @@ class TestCollectionLifecycle:
         assert ae.cleanup_accuracy_collection(tmp_path / "db") is False
 
 
-class TestTeardown:
-    """I5: cleanup always runs; teardown failures never mask the real error."""
-
-    def test_cleanup_runs_even_when_reset_fails(self, ae, tmp_path, monkeypatch):
-        ae.prepare_accuracy_store(tmp_path / "db", "gemini", None)
-
-        def failing_reset():
-            raise RuntimeError("reset exploded")
-
-        monkeypatch.setattr(ae, "reset_embedder", failing_reset)
-        with pytest.raises(RuntimeError, match="reset exploded"):
-            ae.teardown_accuracy_run(tmp_path / "db", err=io.StringIO())
-        assert ae._chroma_client(tmp_path / "db").list_collections() == []
-
-    def test_suppressed_teardown_reports_and_swallows(self, ae, tmp_path,
-                                                      monkeypatch):
-        ae.prepare_accuracy_store(tmp_path / "db", "gemini", None)
-
-        def failing_reset():
-            raise RuntimeError("reset exploded")
-
-        monkeypatch.setattr(ae, "reset_embedder", failing_reset)
-        err = io.StringIO()
-        ae.teardown_accuracy_run(tmp_path / "db", err=err, suppress=True)
-        assert "embedder reset failed" in err.getvalue()
-        assert ae._chroma_client(tmp_path / "db").list_collections() == []
-
-    def test_first_failure_raised_later_failures_reported(self, ae, tmp_path,
-                                                          monkeypatch):
-        def failing_reset():
-            raise RuntimeError("reset exploded")
-
-        def failing_cleanup(_db_path):
-            raise RuntimeError("cleanup exploded")
-
-        monkeypatch.setattr(ae, "reset_embedder", failing_reset)
-        monkeypatch.setattr(ae, "cleanup_accuracy_collection", failing_cleanup)
-        err = io.StringIO()
-        with pytest.raises(RuntimeError, match="reset exploded"):
-            ae.teardown_accuracy_run(tmp_path / "db", err=err)
-        # the secondary failure is reported, not silently dropped
-        assert "collection cleanup failed" in err.getvalue()
-
-    def test_suppress_reports_both_failures(self, ae, tmp_path, monkeypatch):
-        def failing_reset():
-            raise RuntimeError("reset exploded")
-
-        def failing_cleanup(_db_path):
-            raise RuntimeError("cleanup exploded")
-
-        monkeypatch.setattr(ae, "reset_embedder", failing_reset)
-        monkeypatch.setattr(ae, "cleanup_accuracy_collection", failing_cleanup)
-        err = io.StringIO()
-        ae.teardown_accuracy_run(tmp_path / "db", err=err, suppress=True)
-        assert "embedder reset failed" in err.getvalue()
-        assert "collection cleanup failed" in err.getvalue()
-
-    def test_successful_teardown_is_silent(self, ae, tmp_path, monkeypatch):
-        monkeypatch.setattr(ae, "reset_embedder", lambda: None)
-        err = io.StringIO()
-        ae.teardown_accuracy_run(tmp_path / "db", err=err)
-        assert err.getvalue() == ""
-
-
 # ---------------------------------------------------------------------------
 # run_evaluation end-to-end with fakes
 # ---------------------------------------------------------------------------
@@ -697,6 +633,43 @@ class TestRunEvaluation:
             )
         # the throwaway collection was created, then removed despite the error
         assert ae.cleanup_accuracy_collection(tmp_path / "db") is False
+
+    def test_cleanup_runs_even_when_reset_fails(self, ae, tmp_path, monkeypatch):
+        self._fake_runtime(ae, monkeypatch)
+
+        def failing_reset():
+            raise RuntimeError("reset exploded")
+
+        monkeypatch.setattr(ae, "reset_embedder", failing_reset)
+        clip = tmp_path / "bench.mp4"
+        clip.write_bytes(b"fake-video")
+        with pytest.raises(RuntimeError, match="reset exploded"):
+            ae.run_evaluation(
+                backend="gemini", clip_path=clip, db_path=tmp_path / "db",
+                judgments_path=tmp_path / "j.json",
+                input_fn=lambda _p: "y",
+            )
+        # the collection was still dropped — a reset failure can't leak it
+        assert ae._chroma_client(tmp_path / "db").list_collections() == []
+
+    def test_reset_runs_even_when_cleanup_fails(self, ae, tmp_path, monkeypatch):
+        self._fake_runtime(ae, monkeypatch, index_error=RuntimeError("boom"))
+
+        def failing_cleanup(_db_path):
+            raise RuntimeError("cleanup exploded")
+
+        resets = []
+        monkeypatch.setattr(ae, "reset_embedder", lambda: resets.append(True))
+        monkeypatch.setattr(ae, "cleanup_accuracy_collection", failing_cleanup)
+        clip = tmp_path / "bench.mp4"
+        clip.write_bytes(b"fake-video")
+        with pytest.raises(RuntimeError, match="cleanup exploded"):
+            ae.run_evaluation(
+                backend="gemini", clip_path=clip, db_path=tmp_path / "db",
+                judgments_path=tmp_path / "j.json",
+                input_fn=lambda _p: "y",
+            )
+        assert resets == [True]
 
     def test_preexisting_unmarked_collection_blocks_run(self, ae, tmp_path,
                                                         monkeypatch):
@@ -812,49 +785,6 @@ class TestRunEvaluation:
         )
         assert cache["car driving on road"] == {"0.0-30.0": True}
 
-    def test_teardown_failure_does_not_mask_evaluation_error(
-        self, ae, tmp_path, monkeypatch,
-    ):
-        self._fake_runtime(ae, monkeypatch, index_error=RuntimeError("boom"))
-
-        def failing_reset():
-            raise RuntimeError("reset failed")
-
-        monkeypatch.setattr(ae, "reset_embedder", failing_reset)
-        clip = tmp_path / "bench.mp4"
-        clip.write_bytes(b"fake-video")
-        err = io.StringIO()
-        with pytest.raises(RuntimeError, match="boom"):
-            ae.run_evaluation(
-                backend="gemini", clip_path=clip, db_path=tmp_path / "db",
-                judgments_path=tmp_path / "j.json",
-                input_fn=lambda _p: "y", err=err,
-            )
-        assert "embedder reset failed" in err.getvalue()
-        # cleanup still ran despite the reset failure
-        assert ae._chroma_client(tmp_path / "db").list_collections() == []
-
-    def test_cleanup_failure_reported_not_raised_while_unwinding(
-        self, ae, tmp_path, monkeypatch,
-    ):
-        self._fake_runtime(ae, monkeypatch, index_error=RuntimeError("boom"))
-
-        def failing_cleanup(_db_path):
-            raise RuntimeError("cleanup exploded")
-
-        monkeypatch.setattr(ae, "cleanup_accuracy_collection", failing_cleanup)
-        clip = tmp_path / "bench.mp4"
-        clip.write_bytes(b"fake-video")
-        err = io.StringIO()
-        with pytest.raises(RuntimeError, match="boom"):
-            ae.run_evaluation(
-                backend="gemini", clip_path=clip, db_path=tmp_path / "db",
-                judgments_path=tmp_path / "j.json",
-                input_fn=lambda _p: "y", err=err,
-            )
-        assert "collection cleanup failed" in err.getvalue()
-
-
 class TestBackendModelResolution:
     """Flag resolution is delegated to the shared helpers in
     sentrysearch.embedder, so the eval and `sentrysearch index` agree on
@@ -866,19 +796,55 @@ class TestBackendModelResolution:
         # workload proves the wiring without touching disk or the network.
         seen = {}
 
-        def fake_resolve_backend(backend=None, model=None):
-            seen["backend"] = (backend, model)
+        def fake_resolve_backend(backend=None, model=None, dashscope_model=None):
+            seen["backend"] = (backend, model, dashscope_model)
             return "local"
 
-        def fake_resolve_model(backend, model=None, **_kwargs):
-            seen["model"] = (backend, model)
+        def fake_resolve_model(backend, model=None, dashscope_model=None,
+                               **_kwargs):
+            seen["model"] = (backend, model, dashscope_model)
             return "qwen2b"
 
         monkeypatch.setattr(ae, "resolve_backend", fake_resolve_backend)
         monkeypatch.setattr(ae, "resolve_model", fake_resolve_model)
 
         assert ae.run_evaluation(workload=[], err=io.StringIO()) is None
-        assert seen == {"backend": (None, None), "model": ("local", None)}
+        assert seen == {
+            "backend": (None, None, None),
+            "model": ("local", None, None),
+        }
+
+    def test_dashscope_model_is_passed_through_resolution(
+            self, ae, monkeypatch):
+        seen = {}
+
+        def fake_resolve_backend(backend=None, model=None, dashscope_model=None):
+            seen["backend"] = (backend, model, dashscope_model)
+            return "qwen-cloud"
+
+        def fake_resolve_model(backend, model=None, dashscope_model=None,
+                               **_kwargs):
+            seen["model"] = (backend, model, dashscope_model)
+            return "qc-y"
+
+        monkeypatch.setattr(ae, "resolve_backend", fake_resolve_backend)
+        monkeypatch.setattr(ae, "resolve_model", fake_resolve_model)
+
+        assert ae.run_evaluation(
+            dashscope_model="qc-y", workload=[], err=io.StringIO(),
+        ) is None
+        assert seen == {
+            "backend": (None, None, "qc-y"),
+            "model": ("qwen-cloud", None, "qc-y"),
+        }
+
+    def test_conflicting_model_flags_are_rejected(self, ae):
+        # Same rule as `sentrysearch index` (issue #78 CLI parity).
+        with pytest.raises(ae.AccuracyEvalError, match="not both"):
+            ae.run_evaluation(
+                model="qwen2b", dashscope_model="qc-model",
+                workload=[], err=io.StringIO(),
+            )
 
     def test_gemini_is_the_default_and_has_no_model(self, ae):
         assert ae.resolve_backend() == "gemini"
@@ -901,6 +867,23 @@ class TestBackendModelResolution:
         assert ae.resolve_model(
             "qwen-cloud", "ignored", "qc-model",
         ) == "qc-model"
+
+    def test_qwen_cloud_ignores_the_model_flag(self, ae):
+        # CLI parity: generic --model never selects a DashScope model.
+        from sentrysearch.qwen_cloud_embedder import (
+            default_dashscope_embedding_model,
+        )
+
+        assert (ae.resolve_model("qwen-cloud", "qc-model", None)
+                == default_dashscope_embedding_model())
+
+    def test_qwen_cloud_without_any_model_flag_uses_default(self, ae):
+        from sentrysearch.qwen_cloud_embedder import (
+            default_dashscope_embedding_model,
+        )
+
+        assert (ae.resolve_model("qwen-cloud", None, None)
+                == default_dashscope_embedding_model())
 
     def test_litellm_falls_back_to_its_default(self, ae):
         from sentrysearch.litellm_embedder import default_litellm_model
@@ -1058,7 +1041,7 @@ class TestMainEntryPoint:
         assert ae.main([]) == 1
         err = capsys.readouterr().err
         assert "EOF" in err
-        assert "interactive judgment input ended unexpectedly" in err
+        assert "judgment prompt input ended" in err
         assert "pre-populate" in err
         assert "terminal" in err
 
@@ -1069,6 +1052,14 @@ class TestMainEntryPoint:
         monkeypatch.setattr(ae, "run_evaluation", raise_error)
         assert ae.main([]) == 1
         assert "Error: bad cache" in capsys.readouterr().err
+
+    def test_conflicting_model_flags_exit_1_without_traceback(self, ae, capsys):
+        # Raised in run_evaluation before any model/backend work — the same
+        # message `sentrysearch index` prints via click.UsageError.
+        assert ae.main(["--model", "x", "--dashscope-model", "y"]) == 1
+        err = capsys.readouterr().err
+        assert "not both" in err
+        assert "Traceback" not in err
 
     def test_clean_run_exits_0(self, ae, monkeypatch):
         monkeypatch.setattr(ae, "run_evaluation", lambda **_kwargs: None)

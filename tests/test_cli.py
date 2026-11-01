@@ -1144,9 +1144,13 @@ class TestIndexLocalFlags:
         assert args == ("local", "qwen2b", None)
         assert callable(kwargs["echo"])
 
-    def test_index_qwen_cloud_honors_model_flag(self, runner, tmp_path):
-        """qwen-cloud falls back to --model when --dashscope-model is absent
-        (shared resolver behavior, issue #78)."""
+    def test_index_qwen_cloud_ignores_model_flag(self, runner, tmp_path):
+        """qwen-cloud uses --dashscope-model or the provider default; the
+        generic --model flag is ignored, exactly as before this change."""
+        from sentrysearch.qwen_cloud_embedder import (
+            default_dashscope_embedding_model,
+        )
+
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
         with patch("sentrysearch.store.SentryStore") as MockStore, \
@@ -1158,8 +1162,36 @@ class TestIndexLocalFlags:
             ])
         assert result.exit_code == 0, result.output
         mock_get.assert_called_once_with(
-            "qwen-cloud", model="my-proxy-model", quantize=None, rpm=None,
+            "qwen-cloud", model=default_dashscope_embedding_model(),
+            quantize=None, rpm=None,
         )
+
+    def test_index_qwen_cloud_uses_dashscope_model(self, runner, tmp_path):
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.embedder.get_embedder", return_value=MagicMock()) as mock_get:
+            MockStore.return_value = MagicMock()
+            result = runner.invoke(cli, [
+                "index", str(empty_dir), "--backend", "qwen-cloud",
+                "--dashscope-model", "my-dashscope-model",
+            ])
+        assert result.exit_code == 0, result.output
+        mock_get.assert_called_once_with(
+            "qwen-cloud", model="my-dashscope-model", quantize=None, rpm=None,
+        )
+
+    def test_index_rejects_conflicting_flags_with_qwen_cloud(
+            self, runner, tmp_path):
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        result = runner.invoke(cli, [
+            "index", str(empty_dir), "--backend", "qwen-cloud",
+            "--model", "my-proxy-model",
+            "--dashscope-model", "my-dashscope-model",
+        ])
+        assert result.exit_code == 2
+        assert "not both" in result.output
 
     def test_index_passes_backend_and_model_to_store(self, runner, tmp_path):
         d = tmp_path / "vids"

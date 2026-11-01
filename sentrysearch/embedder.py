@@ -53,14 +53,16 @@ def resolve_model(
 ) -> str | None:
     """Resolve the model reference for *backend*, or None for gemini.
 
-    Mirrors `sentrysearch index`: qwen-cloud takes ``--dashscope-model``
-    first (then ``--model``, then the provider default), mlx resolves its
-    full model reference now so it lands in the collection metadata,
-    litellm and local fall back to their defaults, and local auto-detects
-    from the hardware — reporting that choice through *echo* when given.
+    Mirrors `sentrysearch index`: qwen-cloud takes ``--dashscope-model``,
+    else the provider default -- the generic ``--model`` flag never
+    selects a DashScope model, so every entry point reads that flag the
+    same way. mlx resolves its full model reference now so it lands in
+    the collection metadata, litellm and local fall back to their
+    defaults, and local auto-detects from the hardware — reporting that
+    choice through *echo* when given.
     """
     if backend == "qwen-cloud":
-        return dashscope_model or model or default_dashscope_embedding_model()
+        return dashscope_model or default_dashscope_embedding_model()
     if backend == "mlx":
         from .mlx_embedder import resolve_model_ref
 
