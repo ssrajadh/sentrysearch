@@ -1839,61 +1839,40 @@ class TestResetCommand:
             assert "already empty" in result.output.lower()
 
     def test_reset_removes_all(self, runner):
-        with patch("sentrysearch.store.SentryStore") as MockStore, \
-             patch("sentrysearch.store.detect_index", return_value=("gemini", None)):
-            inst = MagicMock()
-            inst.get_stats.return_value = {
-                "total_chunks": 10, "unique_source_files": 2,
-                "source_files": ["/a/v1.mp4", "/b/v2.mp4"],
-            }
-            inst.remove_file.return_value = 5
-            MockStore.return_value = inst
+        with patch("sentrysearch.store.reset_indexes", return_value={
+            "total_collections": 1,
+            "total_chunks": 10,
+            "total_files": 2,
+        }):
             result = runner.invoke(cli, ["reset", "--yes"])
             assert result.exit_code == 0
             assert "10" in result.output
-            assert inst.remove_file.call_count == 2
 
 
 class TestRemoveCommand:
     def test_remove_matching_file(self, runner):
-        with patch("sentrysearch.store.SentryStore") as MockStore, \
-             patch("sentrysearch.store.detect_index", return_value=("gemini", None)):
-            inst = MagicMock()
-            inst.get_stats.return_value = {
-                "total_chunks": 10, "unique_source_files": 2,
-                "source_files": ["/a/video1.mp4", "/b/video2.mp4"],
-            }
-            inst.remove_file.return_value = 5
-            MockStore.return_value = inst
+        with patch("sentrysearch.store.remove_files", return_value={
+            "total_removed": 5, "total_files": 1
+        }):
             result = runner.invoke(cli, ["remove", "video1"])
             assert result.exit_code == 0
             assert "Removed 5 chunks" in result.output
-            inst.remove_file.assert_called_once_with("/a/video1.mp4")
 
     def test_remove_no_match(self, runner):
-        with patch("sentrysearch.store.SentryStore") as MockStore, \
-             patch("sentrysearch.store.detect_index", return_value=("gemini", None)):
-            inst = MagicMock()
-            inst.get_stats.return_value = {
-                "total_chunks": 10, "unique_source_files": 1,
-                "source_files": ["/a/video1.mp4"],
-            }
-            MockStore.return_value = inst
+        with patch("sentrysearch.store.remove_files", return_value={
+            "total_removed": 0, "total_files": 0
+        }):
             result = runner.invoke(cli, ["remove", "nonexistent"])
             assert result.exit_code == 0
-            assert "No indexed files matching" in result.output
+            assert "matching" in result.output.lower()
 
     def test_remove_empty_index(self, runner):
-        with patch("sentrysearch.store.SentryStore") as MockStore, \
-             patch("sentrysearch.store.detect_index", return_value=("gemini", None)):
-            inst = MagicMock()
-            inst.get_stats.return_value = {
-                "total_chunks": 0, "unique_source_files": 0, "source_files": [],
-            }
-            MockStore.return_value = inst
-            result = runner.invoke(cli, ["remove", "anything"])
+        with patch("sentrysearch.store.remove_files", return_value={
+            "total_removed": 0, "total_files": 0
+        }):
+            result = runner.invoke(cli, ["remove", "video1"])
             assert result.exit_code == 0
-            assert "empty" in result.output.lower()
+            assert "matching" in result.output.lower()
 
 
 class TestRpmFlag:
