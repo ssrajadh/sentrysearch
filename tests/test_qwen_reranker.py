@@ -107,6 +107,36 @@ class TestQwenReranker:
         assert reranker._model is model
         assert reranker._process_vision_info is process_vision_info
 
+    def test_score_passes_clip_path_without_file_prefix(self, tmp_path):
+        """"file://" + a Windows path is not a valid URI, so the plain path is sent."""
+        clip = tmp_path / "candidate.mp4"
+        clip.write_bytes(b"fake-video")
+
+        reranker = QwenReranker("qwen2b")
+        reranker._model = MagicMock(device="cpu")
+        reranker._model.generate.return_value = [[1, 2]]
+        reranker._processor = MagicMock()
+        reranker._processor.return_value = {
+            "input_ids": [[1]],
+            "attention_mask": [[1]],
+        }
+        reranker._processor.batch_decode.return_value = ['{"rerank_match": true}']
+
+        torch_module = types.ModuleType("torch")
+        torch_module.no_grad = lambda: _NoGrad()
+        qwen_utils = types.ModuleType("qwen_vl_utils")
+        qwen_utils.process_vision_info = MagicMock(
+            return_value=(None, [("video-data", {"fps": 1.0})], {"fps": 1.0}),
+        )
+
+        with patch.dict(
+            sys.modules, {"torch": torch_module, "qwen_vl_utils": qwen_utils},
+        ):
+            reranker.score("red truck", str(clip))
+
+        conversation = reranker._processor.apply_chat_template.call_args.args[0]
+        assert conversation[0]["content"][0]["video"] == str(clip.resolve())
+
     def test_score_generates_decodes_and_parses(self, tmp_path):
         clip = tmp_path / "candidate.mp4"
         clip.write_bytes(b"fake-video")

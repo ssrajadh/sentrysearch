@@ -309,7 +309,7 @@ class LocalEmbedder(BaseEmbedder):
                 "content": [
                     {
                         "type": "video",
-                        "video": "file://" + str(chunk_path.resolve()),
+                        "video": str(chunk_path.resolve()),
                         "fps": 1.0,
                         "max_frames": 32,
                     },
@@ -436,7 +436,7 @@ class LocalEmbedder(BaseEmbedder):
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "image": "file://" + str(image_path.resolve())},
+                    {"type": "image", "image": str(image_path.resolve())},
                 ],
             },
         ]
