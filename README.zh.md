@@ -1,5 +1,7 @@
 # SentrySearch
 
+<a href="https://news.ycombinator.com/item?id=47503617"><img src="https://hackergit.org/badge/ssrajadh/sentrysearch.svg" alt="Hacker News points via HackerGit" height="20"></a>
+
 **语言 / Languages:** [English](README.md) · 简体中文
 
 对视频素材做语义检索：输入想找的画面描述，自动得到裁剪好的片段。
