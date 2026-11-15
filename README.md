@@ -1,6 +1,6 @@
 # SentrySearch
 
-<a href="https://news.ycombinator.com/item?id=47503617"><img src="https://hackergit.org/badge/ssrajadh/sentrysearch.svg" alt="Hacker News points via HackerGit" height="20"></a>
+<a href="https://news.ycombinator.com/item?id=47503617"><img src="https://hackergit.org/badge/ssrajadh/sentrysearch.svg?style=rank" alt="#1 Show HN of the Week on Hacker News" width="250" height="55"></a>
 
 Semantic search over video footage. Type what you're looking for, get a trimmed clip back.
 
