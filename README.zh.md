@@ -1,6 +1,6 @@
 # SentrySearch
 
-<a href="https://news.ycombinator.com/item?id=47503617"><img src="https://hackergit.org/badge/ssrajadh/sentrysearch.svg" alt="Hacker News points via HackerGit" height="20"></a>
+<a href="https://news.ycombinator.com/item?id=47503617"><img src="https://hackergit.org/badge/ssrajadh/sentrysearch.svg?style=rank" alt="#1 Show HN of the Week on Hacker News" width="250" height="55"></a>
 
 **语言 / Languages:** [English](README.md) · 简体中文
 
