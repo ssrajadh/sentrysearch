@@ -232,14 +232,17 @@ class SentryStore:
     """Persistent vector store backed by ChromaDB."""
 
     def __init__(self, db_path: str | Path | None = None, backend: str = "gemini",
-                 model: str | None = None):
+                 model: str | None = None, collection_name: str | None = None):
         db_path = str(db_path or DEFAULT_DB_PATH)
         Path(db_path).mkdir(parents=True, exist_ok=True)
         self._client = chromadb.PersistentClient(path=db_path)
         self._backend = backend
         self._model = model
         # Separate collection per backend+model so incompatible vectors never mix.
-        col_name = _collection_name(backend, model)
+        # collection_name overrides the derived name for throwaway collections
+        # (e.g. benchmarks/accuracy_eval.py's accuracy_eval); pass a valid ChromaDB
+        # name ([a-zA-Z0-9._-]) — it is used verbatim.
+        col_name = collection_name or _collection_name(backend, model)
         metadata = {"hnsw:space": "cosine", "embedding_backend": backend}
         if model:
             metadata["embedding_model"] = model
