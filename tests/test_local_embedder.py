@@ -167,3 +167,52 @@ class TestLocalEmbedderMethods:
         with pytest.raises(LocalModelError):
             embedder.embed_video_chunk("/fake/path.mp4")
         embedder._load_model.assert_called_once()
+
+
+class _StopAfterChatTemplate(Exception):
+    pass
+
+
+def _media_path_sent_to_processor(method_name, media_path, key):
+    """Run an embed method up to the chat template and return the path it passes on."""
+    import sys
+    import types
+
+    embedder = LocalEmbedder()
+    embedder._load_model = MagicMock()
+    embedder._processor = MagicMock()
+
+    torch_module = types.ModuleType("torch")
+    torch_module.nn = types.ModuleType("torch.nn")
+    torch_module.nn.functional = types.ModuleType("torch.nn.functional")
+    qwen_utils = types.ModuleType("qwen_vl_utils")
+    qwen_utils.process_vision_info = MagicMock(side_effect=_StopAfterChatTemplate)
+
+    modules = {
+        "torch": torch_module,
+        "torch.nn": torch_module.nn,
+        "torch.nn.functional": torch_module.nn.functional,
+        "qwen_vl_utils": qwen_utils,
+    }
+    with patch.dict(sys.modules, modules):
+        with pytest.raises(_StopAfterChatTemplate):
+            getattr(embedder, method_name)(str(media_path))
+
+    conversation = embedder._processor.apply_chat_template.call_args.args[0]
+    return conversation[-1]["content"][0][key]
+
+
+class TestMediaPathsAreUsableOnEveryPlatform:
+    """Local paths go to qwen_vl_utils as-is; "file://" + a Windows path is not a valid URI."""
+
+    def test_video_chunk_path_has_no_file_prefix(self, tmp_path):
+        chunk = tmp_path / "chunk.mp4"
+        chunk.write_bytes(b"x")
+        sent = _media_path_sent_to_processor("embed_video_chunk", chunk, "video")
+        assert sent == str(chunk.resolve())
+
+    def test_image_path_has_no_file_prefix(self, tmp_path):
+        image = tmp_path / "query.png"
+        image.write_bytes(b"x")
+        sent = _media_path_sent_to_processor("embed_image", image, "image")
+        assert sent == str(image.resolve())
