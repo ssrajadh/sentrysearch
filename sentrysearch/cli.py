@@ -1653,9 +1653,13 @@ def stats(as_json: bool = False):
 def reset(backend, model):
     """Delete all indexed data."""
     from .store import reset_indexes, DEFAULT_DB_PATH
+    from .local_embedder import normalize_model_key
 
     if model is not None and backend is None:
         backend = "local"
+
+    if model is not None:
+        model = normalize_model_key(model)
 
     summary = reset_indexes(db_path=DEFAULT_DB_PATH, backend=backend, model=model)
 
@@ -1685,9 +1689,13 @@ def remove(files, backend, model):
     Accepts full paths or substrings that match indexed file paths.
     """
     from .store import remove_files, DEFAULT_DB_PATH
+    from .local_embedder import normalize_model_key
 
     if model is not None and backend is None:
         backend = "local"
+
+    if model is not None:
+        model = normalize_model_key(model)
 
     summary = remove_files(db_path=DEFAULT_DB_PATH, backend=backend, model=model, patterns=list(files))
 
