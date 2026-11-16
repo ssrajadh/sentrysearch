@@ -616,6 +616,112 @@ class TestGetAllStats:
         ]
 
 
+class TestResetIndexes:
+    def test_reset_indexes_empty_db(self, tmp_path):
+        """reset_indexes on empty DB returns zero counts."""
+        from sentrysearch.store import reset_indexes
+
+        db = tmp_path / "db"
+        result = reset_indexes(db_path=db)
+        assert result == {"total_collections": 0, "total_chunks": 0, "total_files": 0}
+
+    def test_reset_indexes_no_flags_wipes_all(self, tmp_path):
+        """reset_indexes with no flags deletes all populated indexes."""
+        from sentrysearch.store import SentryStore, reset_indexes, get_all_stats
+
+        db = tmp_path / "db"
+        emb = _make_embedding()
+        SentryStore(db_path=db, backend="gemini").add_chunk(
+            "g1", emb,
+            {"source_file": "g.mp4", "start_time": 0.0, "end_time": 30.0})
+        SentryStore(db_path=db, backend="local", model="qwen8b").add_chunk(
+            "l1", emb,
+            {"source_file": "l.mp4", "start_time": 0.0, "end_time": 30.0})
+
+        # Verify both exist before reset
+        assert len(get_all_stats(db)) == 2
+
+        result = reset_indexes(db_path=db)
+        assert result["total_collections"] == 2
+        assert result["total_chunks"] == 2
+        assert result["total_files"] == 2
+        assert get_all_stats(db) == []
+
+    def test_reset_indexes_scoped_backend_model(self, tmp_path):
+        """reset_indexes with backend/model only deletes matching indexes."""
+        from sentrysearch.store import SentryStore, reset_indexes, get_all_stats
+
+        db = tmp_path / "db"
+        emb = _make_embedding()
+        SentryStore(db_path=db, backend="gemini").add_chunk(
+            "g1", emb,
+            {"source_file": "g.mp4", "start_time": 0.0, "end_time": 30.0})
+        SentryStore(db_path=db, backend="local", model="qwen8b").add_chunk(
+            "l1", emb,
+            {"source_file": "l.mp4", "start_time": 0.0, "end_time": 30.0})
+        SentryStore(db_path=db, backend="local", model="qwen2b").add_chunk(
+            "l2", emb,
+            {"source_file": "l2.mp4", "start_time": 0.0, "end_time": 30.0})
+
+        # Reset only local/qwen8b
+        result = reset_indexes(db_path=db, backend="local", model="qwen8b")
+        assert result["total_collections"] == 1
+        assert result["total_chunks"] == 1
+
+        # gemini and local/qwen2b should remain
+        remaining = get_all_stats(db)
+        assert len(remaining) == 2
+        assert {(s["backend"], s["model"]) for s in remaining} == {
+            ("gemini", None), ("local", "qwen2b"),
+        }
+
+    def test_reset_indexes_deletes_all_matching_legacy_and_suffixed(self, tmp_path):
+        """reset_indexes with backend=local, model=qwen8b deletes BOTH
+        dashcam_chunks_local (legacy) and dashcam_chunks_local_qwen8b."""
+        from sentrysearch.store import SentryStore, reset_indexes, get_all_stats
+
+        db = tmp_path / "db"
+        emb = _make_embedding()
+        # Legacy local collection (no model argument)
+        SentryStore(db_path=db, backend="local").add_chunk(
+            "legacy", emb,
+            {"source_file": "legacy.mp4", "start_time": 0.0, "end_time": 30.0})
+        # Model-suffixed local collection
+        SentryStore(db_path=db, backend="local", model="qwen8b").add_chunk(
+            "suffixed", emb,
+            {"source_file": "suffixed.mp4", "start_time": 0.0, "end_time": 30.0})
+
+        # Both report as (local, qwen8b) - reset should delete BOTH
+        result = reset_indexes(db_path=db, backend="local", model="qwen8b")
+        assert result["total_collections"] == 2
+        assert result["total_chunks"] == 2
+        assert get_all_stats(db) == []
+
+    def test_reset_indexes_scoped_backend_leaves_other_backends(self, tmp_path):
+        """reset_indexes with --backend only leaves other backends intact."""
+        from sentrysearch.store import SentryStore, reset_indexes, get_all_stats
+
+        db = tmp_path / "db"
+        emb = _make_embedding()
+        SentryStore(db_path=db, backend="gemini").add_chunk(
+            "g1", emb,
+            {"source_file": "g.mp4", "start_time": 0.0, "end_time": 30.0})
+        SentryStore(db_path=db, backend="local", model="qwen8b").add_chunk(
+            "l1", emb,
+            {"source_file": "l.mp4", "start_time": 0.0, "end_time": 30.0})
+
+        # Reset only local backend
+        result = reset_indexes(db_path=db, backend="local")
+        assert result["total_collections"] == 1
+        assert result["total_chunks"] == 1
+
+        # gemini should remain
+        remaining = get_all_stats(db)
+        assert len(remaining) == 1
+        assert remaining[0]["backend"] == "gemini"
+        assert remaining[0]["model"] is None
+
+
 class TestBackendInstalled:
     def test_core_backends_always_installed(self):
         from sentrysearch.store import _backend_installed
