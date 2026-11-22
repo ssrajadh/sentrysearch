@@ -1613,38 +1613,34 @@ def stats(as_json: bool = False):
 
 @cli.command()
 @click.option("--backend", type=click.Choice(_BACKEND_CHOICES), default=None,
-              help="Backend to reset (auto-detected if omitted).")
+              help="Only reset this backend's indexes (all backends if omitted).")
 @click.option("--model", default=None,
-              help="Model to reset (auto-detected if omitted). Implies --backend local.")
+              help="Only reset this model's index. Implies --backend local.")
 @click.confirmation_option(prompt="This will delete all indexed data. Continue?")
 def reset(backend, model):
     """Delete all indexed data."""
-    from .store import SentryStore, detect_index
+    from .local_embedder import normalize_model_key
+    from .store import reset_indexes
 
     if model is not None and backend is None:
         backend = "local"
-    if backend is None:
-        backend, detected_model = detect_index()
-        backend = backend or "gemini"
-        if model is None:
-            model = detected_model
-    elif backend in ("local", "mlx", "litellm") and model is None:
-        _, model = detect_index(backend=backend)
-    elif backend == "qwen-cloud" and model is None:
-        _, model = detect_index(backend=backend)
-        model = model or default_dashscope_embedding_model()
+    if backend == "local" and model is not None:
+        model = normalize_model_key(model)
 
-    store = SentryStore(backend=backend, model=model)
-    s = store.get_stats()
+    summary = reset_indexes(backend=backend, model=model)
 
-    if s["total_chunks"] == 0:
-        click.echo("Index is already empty.")
+    if summary["total_collections"] == 0:
+        if backend is None:
+            click.echo("Index is already empty.")
+        else:
+            scope = f"--backend {backend}" + (f" --model {model}" if model else "")
+            click.echo(f"No populated index matches {scope}.")
         return
 
-    for f in s["source_files"]:
-        store.remove_file(f)
-
-    click.echo(f"Removed {s['total_chunks']} chunks from {s['unique_source_files']} files.")
+    click.echo(
+        f"Removed {summary['total_chunks']} chunks from {summary['total_files']} files "
+        f"across {summary['total_collections']} indexes."
+    )
 
 
 # -----------------------------------------------------------------------

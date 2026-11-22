@@ -179,6 +179,53 @@ def get_all_stats(db_path: str | Path | None = None) -> list[dict]:
     return stats
 
 
+def reset_indexes(
+    db_path: str | Path | None = None,
+    backend: str | None = None,
+    model: str | None = None,
+) -> dict:
+    """Delete every populated index matching *backend* and *model*.
+
+    Returns a dict with ``total_collections``, ``total_chunks``, and
+    ``total_files`` describing what was removed. When both *backend* and
+    *model* are None, every populated index is deleted.
+
+    An index matches *model* when its stored model equals it or when its
+    collection is the one *model* maps to, so an MLX model can be given as
+    a full path or just its final component. Every match is deleted, so
+    the legacy ``dashcam_chunks_local`` collection goes along with
+    ``dashcam_chunks_local_qwen8b``. A source file indexed under several
+    backends counts once in ``total_files``.
+    """
+    db_path = str(db_path or DEFAULT_DB_PATH)
+    if not Path(db_path).exists():
+        return {"total_collections": 0, "total_chunks": 0, "total_files": 0}
+
+    client = chromadb.PersistentClient(path=db_path)
+    total_collections = 0
+    total_chunks = 0
+    source_files = set()
+
+    for entry_backend, entry_model, name in _indexes_with_data(client):
+        if backend is not None and entry_backend != backend:
+            continue
+        if (model is not None and entry_model != model
+                and name != _collection_name(entry_backend, model)):
+            continue
+
+        s = _collection_stats(client.get_collection(name))
+        total_chunks += s["total_chunks"]
+        source_files.update(s["source_files"])
+        client.delete_collection(name)
+        total_collections += 1
+
+    return {
+        "total_collections": total_collections,
+        "total_chunks": total_chunks,
+        "total_files": len(source_files),
+    }
+
+
 def detect_index(
     db_path: str | Path | None = None,
     backend: str | None = None,
