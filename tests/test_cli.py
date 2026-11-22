@@ -1902,7 +1902,101 @@ class TestHandleError:
 
 
 class TestResetCommand:
+    @pytest.fixture(autouse=True)
+    def db(self, tmp_path):
+        """Point the default DB at a temp dir so reset never touches ~/.sentrysearch."""
+        db = tmp_path / "db"
+        with patch("sentrysearch.store.DEFAULT_DB_PATH", db):
+            yield db
+
+    @staticmethod
+    def _add(db, backend, model=None, source_file="v.mp4"):
+        from sentrysearch.store import SentryStore
+
+        SentryStore(db_path=db, backend=backend, model=model).add_chunk(
+            f"{backend}-{model}-{source_file}", [0.1] * 768,
+            {"source_file": source_file, "start_time": 0.0, "end_time": 30.0})
+
+    @staticmethod
+    def _remaining(db):
+        from sentrysearch.store import get_all_stats
+
+        return {(s["backend"], s["model"]) for s in get_all_stats(db)}
+
     def test_reset_empty_index(self, runner):
+        result = runner.invoke(cli, ["reset", "--yes"])
+        assert result.exit_code == 0
+        assert "already empty" in result.output.lower()
+
+    def test_reset_removes_all(self, runner, db):
+        self._add(db, "gemini")
+        self._add(db, "local", "qwen8b")
+        result = runner.invoke(cli, ["reset", "--yes"])
+        assert result.exit_code == 0
+        # Same clip in both indexes counts as one file.
+        assert "Removed 2 chunks from 1 files across 2 indexes." in result.output
+        assert self._remaining(db) == set()
+
+    def test_reset_local_model_alias(self, runner, db):
+        self._add(db, "gemini")
+        self._add(db, "local", "qwen8b")
+        result = runner.invoke(
+            cli, ["reset", "--model", "Qwen/Qwen3-VL-Embedding-8B", "--yes"])
+        assert result.exit_code == 0
+        assert self._remaining(db) == {("gemini", None)}
+
+    @pytest.mark.parametrize("backend,stored,flag", [
+        ("mlx", "/models/qwen2b", "/models/qwen2b"),
+        ("mlx", "/models/qwen2b", "qwen2b"),
+        ("qwen-cloud", "qwen3-vl-embedding", "qwen3-vl-embedding"),
+        ("litellm", "openai/text-embedding-3-small", "openai/text-embedding-3-small"),
+    ])
+    def test_reset_non_local_model(self, runner, db, backend, stored, flag):
+        self._add(db, "gemini")
+        self._add(db, backend, stored)
+        result = runner.invoke(
+            cli, ["reset", "--backend", backend, "--model", flag, "--yes"])
+        assert result.exit_code == 0
+        assert self._remaining(db) == {("gemini", None)}
+
+    def test_reset_scoped_no_match(self, runner, db):
+        self._add(db, "gemini")
+        result = runner.invoke(cli, ["reset", "--backend", "mlx", "--yes"])
+        assert result.exit_code == 0
+        assert "No populated index matches --backend mlx." in result.output
+        assert self._remaining(db) == {("gemini", None)}
+
+
+class TestRemoveCommand:
+    def test_remove_matching_file(self, runner):
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.store.detect_index", return_value=("gemini", None)):
+            inst = MagicMock()
+            inst.get_stats.return_value = {
+                "total_chunks": 10, "unique_source_files": 2,
+                "source_files": ["/a/video1.mp4", "/b/video2.mp4"],
+            }
+            inst.remove_file.return_value = 5
+            MockStore.return_value = inst
+            result = runner.invoke(cli, ["remove", "video1"])
+            assert result.exit_code == 0
+            assert "Removed 5 chunks" in result.output
+            inst.remove_file.assert_called_once_with("/a/video1.mp4")
+
+    def test_remove_no_match(self, runner):
+        with patch("sentrysearch.store.SentryStore") as MockStore, \
+             patch("sentrysearch.store.detect_index", return_value=("gemini", None)):
+            inst = MagicMock()
+            inst.get_stats.return_value = {
+                "total_chunks": 10, "unique_source_files": 1,
+                "source_files": ["/a/video1.mp4"],
+            }
+            MockStore.return_value = inst
+            result = runner.invoke(cli, ["remove", "nonexistent"])
+            assert result.exit_code == 0
+            assert "No indexed files matching" in result.output
+
+    def test_remove_empty_index(self, runner):
         with patch("sentrysearch.store.SentryStore") as MockStore, \
              patch("sentrysearch.store.detect_index", return_value=("gemini", None)):
             inst = MagicMock()
@@ -1910,45 +2004,9 @@ class TestResetCommand:
                 "total_chunks": 0, "unique_source_files": 0, "source_files": [],
             }
             MockStore.return_value = inst
-            result = runner.invoke(cli, ["reset", "--yes"])
+            result = runner.invoke(cli, ["remove", "anything"])
             assert result.exit_code == 0
-            assert "already empty" in result.output.lower()
-
-    def test_reset_removes_all(self, runner):
-        with patch("sentrysearch.store.reset_indexes", return_value={
-            "total_collections": 1,
-            "total_chunks": 10,
-            "total_files": 2,
-        }):
-            result = runner.invoke(cli, ["reset", "--yes"])
-            assert result.exit_code == 0
-            assert "10" in result.output
-
-
-class TestRemoveCommand:
-    def test_remove_matching_file(self, runner):
-        with patch("sentrysearch.store.remove_files", return_value={
-            "total_removed": 5, "total_files": 1
-        }):
-            result = runner.invoke(cli, ["remove", "video1"])
-            assert result.exit_code == 0
-            assert "Removed 5 chunks" in result.output
-
-    def test_remove_no_match(self, runner):
-        with patch("sentrysearch.store.remove_files", return_value={
-            "total_removed": 0, "total_files": 0
-        }):
-            result = runner.invoke(cli, ["remove", "nonexistent"])
-            assert result.exit_code == 0
-            assert "matching" in result.output.lower()
-
-    def test_remove_empty_index(self, runner):
-        with patch("sentrysearch.store.remove_files", return_value={
-            "total_removed": 0, "total_files": 0
-        }):
-            result = runner.invoke(cli, ["remove", "video1"])
-            assert result.exit_code == 0
-            assert "matching" in result.output.lower()
+            assert "empty" in result.output.lower()
 
 
 class TestRpmFlag:
