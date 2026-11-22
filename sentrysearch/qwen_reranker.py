@@ -191,7 +191,7 @@ class QwenReranker:
                 "content": [
                     {
                         "type": "video",
-                        "video": "file://" + str(clip.resolve()),
+                        "video": str(clip.resolve()),
                         "fps": 1.0,
                         "max_frames": 32,
                     },
